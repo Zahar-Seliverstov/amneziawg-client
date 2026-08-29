@@ -3,6 +3,8 @@ package vpn
 import (
 	"testing"
 	"time"
+
+	"github.com/user/amnezia-web-client/internal/config"
 )
 
 // Ответ IpcGet с двумя пирами: счётчики должны сложиться, а время
@@ -80,5 +82,32 @@ func TestParseDeviceStatsGarbage(t *testing.T) {
 		if got.TxBytes != 0 || got.RxBytes != 0 || !got.LastHandshake.IsZero() {
 			t.Errorf("на входе %q ожидался пустой результат, получено %+v", state, got)
 		}
+	}
+}
+
+// Пир с keepalive рукопожимается сам — маршруты до рукопожатия ему не нужны.
+// Ошибка здесь означает, что трафик снова уйдёт в неподнятый туннель.
+func TestHasKeepalive(t *testing.T) {
+	cases := []struct {
+		name string
+		peer config.PeerConfig
+		want bool
+	}{
+		{"число", config.PeerConfig{PersistentKeepalive: 25}, true},
+		{"диапазон", config.PeerConfig{PersistentKeepaliveRaw: "25-35"}, true},
+		{"диапазон и ноль", config.PeerConfig{PersistentKeepalive: 0, PersistentKeepaliveRaw: "25-35"}, true},
+		{"не задан", config.PeerConfig{}, false},
+		{"пробелы", config.PeerConfig{PersistentKeepaliveRaw: "   "}, false},
+	}
+
+	for _, c := range cases {
+		cfg := &config.AmneziaWGConfig{Peers: []config.PeerConfig{c.peer}}
+		if got := hasKeepalive(cfg); got != c.want {
+			t.Errorf("%s: ожидалось %v, получено %v", c.name, c.want, got)
+		}
+	}
+
+	if hasKeepalive(&config.AmneziaWGConfig{}) {
+		t.Error("без пиров keepalive быть не может")
 	}
 }

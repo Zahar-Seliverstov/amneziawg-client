@@ -243,16 +243,18 @@ func (m *Manager) deviceLogger() *device.Logger {
 const (
 	statsInterval = 3 * time.Second
 
-	// graceWithoutRoutes — сколько ждём рукопожатия, НЕ трогая маршрутизацию.
-	// С PersistentKeepalive ядро шлёт первый пакет само, и живой сервер
-	// отвечает за секунду. Пока этот срок не вышел, интернет пользователя
-	// не затронут вообще.
+	// graceWithoutRoutes — сколько ждём рукопожатия, НЕ трогая маршрутизацию,
+	// когда у пира нет PersistentKeepalive. Такой пир начинает рукопожатие
+	// только когда через туннель пойдёт трафик, а трафик пойдёт лишь по
+	// маршрутам — иначе соединение не поднимется никогда.
+	//
+	// Если keepalive задан, этот запас НЕ применяется: ядро шлёт первый
+	// пакет само, живой сервер отвечает за секунду, и ставить маршруты до
+	// рукопожатия незачем. Ровно это однажды и увело весь трафик в
+	// неподнятый туннель — интернет пропадал до самого отключения.
 	graceWithoutRoutes = 10 * time.Second
 
-	// handshakeTimeout — общий предел. После graceWithoutRoutes маршруты
-	// всё же ставятся: конфиг без PersistentKeepalive начинает рукопожатие
-	// только когда через туннель пойдёт трафик, а трафик пойдёт лишь по
-	// маршрутам. Не дождались и здесь — соединения нет.
+	// handshakeTimeout — общий предел ожидания.
 	handshakeTimeout = 45 * time.Second
 )
 
@@ -266,6 +268,10 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 	routesUp := false
 	established := false
 	lastNotify := time.Time{}
+
+	// Пир с keepalive обязан рукопожаться сам. Молчит — значит соединения
+	// нет, и трогать маршрутизацию нельзя ни при каких обстоятельствах.
+	waitsForTraffic := !hasKeepalive(cfg)
 
 	// Маршруты ставим один раз, дальше только следим.
 	bringUpTraffic := func() bool {
@@ -299,9 +305,9 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 
 		if !established {
 			if stats.LastHandshake.IsZero() {
-				// Льготный срок вышел — включаем маршруты, чтобы дать шанс
-				// конфигам без PersistentKeepalive.
-				if waited >= graceWithoutRoutes && !bringUpTraffic() {
+				// Маршруты до рукопожатия ставим только ради пиров, которым
+				// без трафика не с чего начать.
+				if waitsForTraffic && waited >= graceWithoutRoutes && !bringUpTraffic() {
 					return
 				}
 				if waited >= handshakeTimeout {
@@ -341,6 +347,17 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 			m.notifyStatusChange()
 		}
 	}
+}
+
+// hasKeepalive сообщает, задан ли хотя бы у одного пира PersistentKeepalive.
+// Значение бывает диапазоном ("25-35"), поэтому смотрим и исходную строку.
+func hasKeepalive(cfg *config.AmneziaWGConfig) bool {
+	for _, peer := range cfg.Peers {
+		if peer.PersistentKeepalive > 0 || strings.TrimSpace(peer.PersistentKeepaliveRaw) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceStats — сводка по всем пирам устройства.
