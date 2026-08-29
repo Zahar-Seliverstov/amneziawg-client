@@ -1,0 +1,971 @@
+/*
+  Плоское тёмное оформление: цвет и тонкие границы вместо теней.
+  Объём остаётся только у главной кнопки — она единственный элемент,
+  который должен читаться как физическая кнопка.
+*/
+
+:root {
+  --bg:          #0e0f13;
+  --surface:     #16181d;
+  --surface-2:   #1b1e24;
+  --sunken:      #101216;
+
+  --line:        #262a32;
+  --line-soft:   #1f232a;
+
+  --text:        #eceef1;
+  --text-dim:    #939aa6;
+  --text-faint:  #656c78;
+
+  /* Цвет здесь несёт смысл, а не украшает.
+     Зелёный  — только «подключено».
+     Янтарный — только переходное состояние.
+     Красный  — только ошибка и удаление.
+     Всё остальное решается яркостью, без цвета. */
+  --green:       #34a765;
+  --green-hi:    #43c079;
+  --amber:       #c08a2e;
+  --red:         #d1544d;
+
+  /* Кнопки живут в той же тёмной гамме, что и всё остальное.
+     Главное действие отличается не яркостью фона, а объёмом и
+     контрастом текста: инверсия выбивала кнопку из строки. */
+  --btn:         #2f343d;
+  --btn-lo:      #23272e;
+  --btn-hi:      #3d434d;
+  --btn-hi-lo:   #2f343d;
+
+  --r:           12px;
+  --r-sm:        9px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
+               Roboto, Inter, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.01em;
+}
+
+.app {
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 22px 18px 60px;
+}
+
+/* ─── Шапка ─────────────────────────────────────────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.topbar h1 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.topbar__settings {
+  margin-left: auto;
+}
+
+.topbar__back {
+  margin-right: 10px;
+}
+
+/* ─── Главная кнопка ────────────────────────────────────────────────────── */
+
+.power-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 0 34px;
+}
+
+.power {
+  width: 196px;
+  height: 196px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text);
+  transition: transform 0.1s ease, opacity 0.2s ease;
+}
+
+.power__face {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  /* Единственный объёмный элемент: мягкий градиент и одна внутренняя
+     подсветка сверху. Ни двойных фасок, ни внешних теней. */
+  transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.power__icon {
+  width: 42px;
+  height: 42px;
+}
+
+.power__label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Таймер выведен из потока: пока он был третьей строкой, его появление
+   при подключении сдвигало значок и надпись вверх — кнопка дёргалась.
+   Отсчёт от центра, а не от низа, чтобы положение не поехало на узком
+   экране, где кнопка меньше. */
+.power__time {
+  position: absolute;
+  /* Половина высоты группы «значок + надпись» плюс зазор.
+     В процентах не годится: на узком экране кнопка меньше,
+     а значок и надпись — почти те же, и таймер налезал бы. */
+  top: calc(50% + 44px);
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.power:hover:not(:disabled) .power__face { filter: brightness(1.08); }
+.power:active:not(:disabled) { transform: scale(0.98); }
+
+.power:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.power:focus-visible { outline: none; }
+.power:focus-visible .power__face {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
+}
+
+/* Отключено — серая */
+.power--off .power__face {
+  background: linear-gradient(180deg, #2b3038 0%, #21252b 100%);
+  color: var(--text-dim);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* Подключено — зелёная */
+.power--on .power__face {
+  background: linear-gradient(180deg, var(--green-hi) 0%, var(--green) 100%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.power--busy .power__face {
+  background: linear-gradient(180deg, #d09a3c 0%, var(--amber) 100%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.66; }
+}
+
+.power--error .power__face {
+  background: linear-gradient(180deg, #e0645d 0%, var(--red) 100%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.power__hint {
+  margin-top: 18px;
+  font-size: 14px;
+  color: var(--text-dim);
+  text-align: center;
+  min-height: 20px;
+}
+
+/* Причина отказа. Красная рамка, а не только текст: сообщение появляется
+   редко и должно читаться как состояние, а не как подпись под кнопкой. */
+.power__error {
+  margin: 12px auto 0;
+  max-width: 340px;
+  padding: 9px 13px;
+  border: 1px solid rgba(209, 84, 77, 0.45);
+  border-radius: var(--r-sm);
+  background: #342225;
+  color: #f0918b;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Вкладки ───────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  margin-top: 8px;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+}
+
+.tabs__btn {
+  flex: 1;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tabs__btn:hover { color: var(--text); }
+
+.tabs__btn--on {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ─── Разделы ───────────────────────────────────────────────────────────── */
+
+.section {
+  margin-top: 16px;
+}
+
+.section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  min-height: 24px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.section__tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+/* ─── Поиск ─────────────────────────────────────────────────────────────── */
+
+/* Поле поиска — сама рамка, а внутри лупа, ввод и кнопка очистки лежат
+   в ряд. Раньше значки позиционировались вручную через absolute и проценты,
+   и лупа не попадала в центр по вертикали. Теперь выравнивает флексбокс. */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 5px 0 12px;
+  margin-bottom: 9px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  outline: 1px solid transparent;
+  outline-offset: -2px;
+  transition: border-color 0.15s ease;
+}
+
+.search:focus-within {
+  border-color: #767d89;
+  outline-color: rgba(255, 255, 255, 0.14);
+}
+
+.search__icon {
+  display: block;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.search__input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.search__input::placeholder { color: var(--text-faint); }
+
+.search__clear {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  color: var(--text-faint);
+}
+
+/* ─── Строки списков ────────────────────────────────────────────────────── */
+
+.list { list-style: none; }
+
+/* Одно определение на оба списка — конфигурации и режимы маршрутизации.
+   Пока стили были продублированы, они успели разъехаться: выбранная
+   конфигурация рисовалась зелёной рамкой, а выбранный режим серой. */
+.row,
+.choice__item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 13px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  margin-bottom: 7px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.list--tight .row { padding: 9px 12px; }
+
+.row:last-child,
+.choice__item:last-child { margin-bottom: 0; }
+
+/* ─── Карточка конфигурации: строка + раскрытая форма правки ─────────────
+   Отступ переезжает со строки на карточку, иначе форма отрывалась бы
+   от своей же строки. */
+.card { margin-bottom: 7px; }
+.card:last-child { margin-bottom: 0; }
+.card .row { margin-bottom: 0; }
+
+/* Раскрытая карточка читается как один блок: рамка общая, а стык строки
+   и формы не разделён линией. */
+.card--open .row,
+.card--open .card__body { border-color: #454c57; }
+
+.card--open .row {
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.card__body {
+  padding: 14px 13px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-top: none;
+  border-radius: 0 0 var(--r) var(--r);
+}
+
+/* Внутри строки текстовое поле короче: форма не должна выдавливать
+   остальной список за пределы экрана. */
+.card__body textarea.input { min-height: 200px; }
+
+.card__body .field:last-of-type { margin-bottom: 14px; }
+
+.row--tap,
+.choice__item { cursor: pointer; }
+
+/* Наведение — самый слабый сигнал: только фон, рамка не меняется.
+   Иначе наведение на невыбранную строку выглядит как выбор. */
+.row--tap:hover,
+.choice__item:hover { background: #1a1d23; }
+
+/* Выделение выглядит ОДИНАКОВО в обоих списках: зелёная галочка,
+   светлее фон, ярче рамка. Ни одного отдельного приёма для конфигураций. */
+.row--selected,
+.choice__item--on {
+  background: var(--surface-2);
+  border-color: #454c57;
+}
+
+/* Подключение — это не выделение, а состояние. Его несёт метка
+   «активна», а не ещё одна рамка: строка и так уже выделена. */
+
+.row__name {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.row__value {
+  flex: 1;
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Кружок-отметка */
+.mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.row--selected .mark,
+.choice__item--on .mark {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+
+/* ─── Метки ─────────────────────────────────────────────────────────────── */
+
+.tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.tag--on {
+  color: #7cd6a0;
+  background: rgba(52, 167, 101, 0.12);
+  border-color: rgba(52, 167, 101, 0.3);
+}
+
+/* ─── Выбор режима ──────────────────────────────────────────────────────── */
+
+.choice {
+  margin-bottom: 14px;
+}
+
+.choice__item input { display: none; }
+
+.choice__title {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.choice__note {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ─── Кнопки ────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  /* padding + 1px вместо border: рамку рисует inset-кольцо. Отдельная
+     граница и inset-тени скруглялись каждая по-своему, и на углах их
+     кромки расходились на доли пикселя — край выглядел рваным. */
+  padding: 11px 18px;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  /* Объём как у главной кнопки. Верхняя кромка — не полоса в 1px, а
+     короткий градиент: он обрезается тем же радиусом, что и заливка,
+     и на скруглениях растворяется вместо ступенек. */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 2px),
+    linear-gradient(180deg, var(--btn) 0%, var(--btn-lo) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: filter 0.15s ease, transform 0.06s ease, box-shadow 0.12s ease;
+}
+
+.btn:hover:not(:disabled) { filter: brightness(1.14); }
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Главное действие: та же гамма и тот же объём, но на ступень светлее
+   и с более контрастной кромкой. Заметнее соседей, не выпадая из строки. */
+.btn--accent {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 2px),
+    linear-gradient(180deg, var(--btn-hi) 0%, var(--btn-hi-lo) 100%);
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.btn--accent:active:not(:disabled) {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+
+.btn--quiet {
+  gap: 4px;
+  background: none;
+  box-shadow: none;
+  color: var(--text-dim);
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.btn--quiet:hover:not(:disabled) {
+  filter: none;
+  color: var(--text);
+}
+
+.btn--quiet:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: #7c8492;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+/* Без этого SVG выравнивается по базовой линии текста и уезжает
+   на пару пикселей вверх — значок выглядит смещённым в кнопке. */
+.icon-btn svg { display: block; }
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.icon-btn--danger:hover:not(:disabled) {
+  color: var(--red);
+  background: rgba(209, 84, 77, 0.1);
+}
+
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ─── Поля ──────────────────────────────────────────────────────────────── */
+
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  outline: 1px solid transparent;
+  outline-offset: -2px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+/* Фокус обозначается самой рамкой: она становится светлой и вдвое толще
+   за счёт внутренней подсветки. Полупрозрачный ореол вокруг размывал край
+   и выглядел грязным пятном, потому что смешивался с фоном. */
+.input:focus {
+  border-color: #767d89;
+  outline-color: rgba(255, 255, 255, 0.14);
+}
+
+.input::placeholder { color: var(--text-faint); }
+
+.input--mono,
+textarea.input {
+  /* Типовой .conf — это 20–25 строк. В 160px влезала едва половина,
+     и подсказка обрезалась на середине. */
+  min-height: 280px;
+  resize: vertical;
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ─── Формы ─────────────────────────────────────────────────────────────── */
+
+.form {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+}
+
+.field { margin-bottom: 13px; }
+
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.field__note {
+  margin-left: 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* Кнопки занимают всю ширину поровну: прижатые влево они оставляли
+   справа пустоту и не выравнивались ни с одним краем полей. */
+.form__actions {
+  display: flex;
+  gap: 9px;
+}
+
+.form__actions .btn { flex: 1; }
+
+.form__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 14px;
+}
+
+.add-rule {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.add-rule__type { width: 118px; flex-shrink: 0; }
+.add-rule .input { flex: 1; min-width: 130px; }
+
+/* ─── Пинг ──────────────────────────────────────────────────────────────── */
+
+/* Значок кликабелен: нажатие меряет пинг заново, не дожидаясь
+   десятисекундного цикла. */
+.ping-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+
+.ping-badge:hover:not(:disabled) { filter: brightness(1.35); }
+
+.ping-badge:disabled { cursor: default; }
+
+/* Пока идёт замер, прежнее число остаётся на месте — просто гаснет.
+   Так значок не меняет ширину и не дёргает строку под кнопкой. */
+.ping-badge--loading {
+  opacity: 0.5;
+}
+
+.ping-badge--good {
+  color: var(--green-hi);
+  background: rgba(52, 167, 101, 0.15);
+}
+
+.ping-badge--medium {
+  color: var(--amber);
+  background: rgba(192, 138, 46, 0.15);
+}
+
+.ping-badge--bad {
+  color: var(--red);
+  background: rgba(209, 84, 77, 0.15);
+}
+
+/* ─── Мелочи ────────────────────────────────────────────────────────────── */
+
+.muted {
+  color: var(--text-faint);
+  font-size: 14px;
+  padding: 4px 0;
+}
+
+/* ─── Уведомления ───────────────────────────────────────────────────────── */
+
+/* Сверху, а не снизу: внизу стоят кнопки форм, и сообщение их перекрывало. */
+.toasts {
+  position: fixed;
+  z-index: 100;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  width: min(430px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Вид как у прежней полосы: тонкая рамка и текст одного цвета, без цветной
+   планки сбоку — она выбивалась из общего строя. Заливка непрозрачная:
+   уведомление висит поверх списка, и просвечивающий текст под ним мешал
+   читать само сообщение. Цвета — те же тона, уже смешанные с --surface. */
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 8px 11px 14px;
+  border: 1px solid;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+}
+
+.toast--error {
+  background: #342225;
+  border-color: #7a3937;
+  color: #f0918b;
+}
+
+.toast--ok {
+  background: #1b2f29;
+  border-color: #266544;
+  color: #7cd6a0;
+}
+
+.toast__text {
+  flex: 1;
+  padding-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* Счётчик повторов одного и того же сообщения */
+.toast__count {
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Крестик в цвет сообщения, а не серый */
+.toast__close {
+  width: 24px;
+  height: 24px;
+  color: inherit;
+  opacity: 0.65;
+}
+
+.toast__close:hover:not(:disabled) {
+  color: inherit;
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.toast-enter-active,
+.toast-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+
+.toast-enter-from,
+.toast-leave-to { opacity: 0; transform: translateY(-10px); }
+
+/* Соседние уведомления доезжают на место, а не прыгают */
+.toast-leave-active { position: absolute; width: 100%; }
+.toast-move { transition: transform 0.2s ease; }
+
+@media (max-width: 420px) {
+  .power { width: 170px; height: 170px; }
+  .power__icon { width: 38px; height: 38px; }
+}
+
+/* ─── Страница настроек ─────────────────────────────────────────────────── */
+
+.setting-group {
+  margin-bottom: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.setting-group__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.setting-group__header svg {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.setting-badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+  background: rgba(192, 138, 46, 0.15);
+  border-radius: 4px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: default;
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-row--sub {
+  padding-left: 28px;
+  background: var(--sunken);
+}
+
+.setting-row--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.setting-row__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.setting-row__note {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.setting-row__value {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.setting-row__control {
+  width: 140px;
+  flex-shrink: 0;
+}
+
+/* ─── Переключатель (toggle) ────────────────────────────────────────────── */
+
+.toggle {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle__track {
+  width: 44px;
+  height: 24px;
+  background: var(--btn-lo);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.toggle__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  background: var(--text-dim);
+  border-radius: 50%;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.toggle input:checked + .toggle__track {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.toggle input:checked + .toggle__track .toggle__thumb {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+.toggle--disabled {
+  cursor: not-allowed;
+}
+
+.toggle--disabled .toggle__track {
+  opacity: 0.5;
+}

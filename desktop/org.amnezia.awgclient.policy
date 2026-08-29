@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+
+<!--
+  Разрешает запускать backend AmneziaWG с правами root без пароля, но только
+  из активной локальной сессии. Пароль спрашивается один раз — при установке
+  этого файла (для неё нужен root).
+
+  Путь в exec.path обязан указывать на копию, которую пользователь изменить не
+  может (root:root, 0755). Иначе любой процесс пользователя подменил бы
+  бинарник и получил root без пароля.
+-->
+<policyconfig>
+  <vendor>AmneziaWG Web Client</vendor>
+
+  <action id="org.amnezia.awgclient.run-backend">
+    <description>Управление VPN-соединением AmneziaWG</description>
+    <description xml:lang="en">Manage the AmneziaWG VPN connection</description>
+    <message>Для управления VPN-соединением нужны права администратора</message>
+    <message xml:lang="en">Administrator rights are required to manage the VPN connection</message>
+
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/awg-client/awg-client</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AWG Client",
+  "mainBinaryName": "awg-client-desktop",
+  "version": "0.1.0",
+  "identifier": "org.amnezia.awgclient",
+  "build": {
+    "frontendDist": "../splash"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AWG Client",
+        "url": "index.html",
+        "width": 1120,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "visible": false,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "category": "Utility",
+    "shortDescription": "Клиент AmneziaWG",
+    "longDescription": "Десктопная оболочка веб-клиента AmneziaWG: окно поверх локального backend'а, который поднимается с правами root через polkit.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/awg-client"],
+    "linux": {
+      "deb": {
+        "depends": ["polkit", "libayatana-appindicator3-1"]
+      }
+    }
+  }
+}

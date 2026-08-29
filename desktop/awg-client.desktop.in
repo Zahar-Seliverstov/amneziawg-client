@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AWG Client
+GenericName=AmneziaWG VPN
+Comment=Клиент AmneziaWG
+Exec=@BIN@
+Icon=awg-client
+Terminal=false
+Categories=Network;Security;
+Keywords=VPN;AmneziaWG;WireGuard;
+StartupWMClass=AWG Client
