@@ -4,14 +4,35 @@
 встроенным ядром `amneziawg-go`, интерфейс на Nuxt. Ядро подключено
 библиотекой, отдельный бинарник ставить не нужно.
 
-## Требования
+## Установка
+
+Готовые пакеты — на [странице релизов][releases]. Собраны под x86_64.
+
+```sh
+# Debian, Ubuntu и производные
+sudo apt install ./awg-client_1.0.0_amd64.deb
+
+# Любой дистрибутив
+chmod +x awg-client_1.0.0_amd64.AppImage
+./awg-client_1.0.0_amd64.AppImage
+```
+
+Файлы можно сверить с `SHA256SUMS` из того же релиза:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+[releases]: https://github.com/Zahar-Seliverstov/amneziawg-client/releases/latest
+
+## Требования для сборки
 
 - Go 1.25+
 - Node.js 20+
 - Rust (cargo, rustc)
 - `make`
 
-## Сборка и установка
+## Сборка и установка из исходников
 
 ```sh
 ./install.sh
@@ -33,6 +54,23 @@ make dev-backend    # backend отдельно (требует root)
 ```
 
 Backend поднимает API и веб-интерфейс на одном порту `127.0.0.1:8081`.
+
+## Выпуск релиза
+
+Версия живёт в трёх местах и должна совпадать с тегом, иначе сборка в CI
+остановится: `desktop/package.json`, `desktop/src-tauri/Cargo.toml` (и
+`Cargo.lock`), `desktop/src-tauri/tauri.conf.json`.
+
+```sh
+# 1. Поднять версию в манифестах и описать изменения в CHANGELOG.md
+# 2. Закоммитить, затем:
+git tag -a v1.0.0 -m "AWG Client 1.0.0"
+git push origin main v1.0.0
+```
+
+Дальше всё делает [workflow](.github/workflows/release.yml): собирает `.deb`
+и AppImage, считает контрольные суммы и публикует релиз с заметками из
+соответствующего раздела `CHANGELOG.md`.
 
 ## Удаление
 
