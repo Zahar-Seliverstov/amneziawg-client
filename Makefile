@@ -1,6 +1,6 @@
 .PHONY: all build build-backend build-frontend embed-ui dev-backend dev-frontend \
         desktop desktop-dev desktop-run desktop-install desktop-uninstall \
-        desktop-nopasswd desktop-nopasswd-off clean install uninstall
+        desktop-nopasswd desktop-nopasswd-off clean
 
 # Установка приложения — в пользовательский префикс: root не нужен, права
 # приложение и так берёт через polkit в момент запуска VPN.
@@ -111,11 +111,3 @@ clean:
 	rm -rf frontend/.nuxt frontend/.output frontend/node_modules
 	rm -rf desktop/node_modules desktop/src-tauri/target desktop/src-tauri/binaries/awg-client-*
 	find backend/internal/web/dist -mindepth 1 ! -name .gitkeep -delete
-
-# Install backend as service
-install:
-	cd backend && make install
-
-# Uninstall backend service
-uninstall:
-	cd backend && make uninstall

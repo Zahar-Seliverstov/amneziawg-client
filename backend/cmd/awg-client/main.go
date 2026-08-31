@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -16,72 +18,86 @@ import (
 	"github.com/user/amnezia-web-client/internal/api"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/version"
 	"github.com/user/amnezia-web-client/internal/vpn"
+)
+
+// Тайминги HTTP-сервера.
+const (
+	// readHeaderTimeout — предел на чтение заголовков запроса. Без него
+	// соединение, открытое и замолчавшее, занимает горутину и файловый
+	// дескриптор до бесконечности: классический медленный отказ в
+	// обслуживании, устроить который здесь может любой локальный процесс.
+	readHeaderTimeout = 10 * time.Second
+
+	// idleTimeout закрывает keep-alive соединения, которыми больше не
+	// пользуются.
+	idleTimeout = 2 * time.Minute
+
+	// Общего WriteTimeout здесь намеренно нет: он обрывал бы и WebSocket,
+	// который живёт всё время работы приложения. Предельные сроки на запись
+	// стоят на самих кадрах WebSocket, в пакете api.
+
+	// shutdownTimeout — сколько ждём завершения запросов при остановке.
+	shutdownTimeout = 5 * time.Second
+
+	// autoconnectDelay даёт серверу начать слушать до того, как поднимется
+	// туннель: интерфейс, открытый сразу после запуска, должен увидеть уже
+	// идущее подключение, а не пустой ответ.
+	autoconnectDelay = 500 * time.Millisecond
+
+	// parentPollInterval — как часто проверяем, жива ли оболочка.
+	parentPollInterval = 2 * time.Second
 )
 
 func main() {
 	// Parse flags
 	port := flag.Int("port", 8080, "HTTP server port")
-	host := flag.String("host", "0.0.0.0", "HTTP server host (0.0.0.0 for all interfaces)")
+	// Только петлевой интерфейс: у API нет аутентификации, работает он от
+	// root и отдаёт конфиги с приватными ключами. Значение по умолчанию
+	// 0.0.0.0 открывало всё это любому в локальной сети.
+	host := flag.String("host", "127.0.0.1", "HTTP server host")
 	configPath := flag.String("config", "", "Path to config file (default: ~/.config/awg-client/config.json)")
 	webDir := flag.String("web", "", "Directory with built web UI (default: UI embedded at build time)")
 	parentPID := flag.Int("parent-pid", 0, "Exit when this PID disappears (used by the desktop shell)")
 	desktopExe := flag.String("desktop-exe", "", "Path to the desktop shell binary (used for the autostart entry)")
+	showVersion := flag.Bool("version", false, "Print the version and exit")
 	flag.Parse()
-	
-	// Determine config path
-	if *configPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("Failed to get home directory: %v", err)
-		}
-		*configPath = filepath.Join(home, ".config", "awg-client", "config.json")
+
+	if *showVersion {
+		fmt.Println(version.Value)
+		return
 	}
-	
-	// Ensure config directory exists
-	configDir := filepath.Dir(*configPath)
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		log.Fatalf("Failed to create config directory: %v", err)
+
+	log.Printf("AWG Client %s", version.Value)
+
+	resolvedPath, err := resolveConfigPath(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to determine config path: %v", err)
 	}
-	
-	log.Printf("Using config file: %s", *configPath)
-	
+	log.Printf("Using config file: %s", resolvedPath)
+
+	warnIfExposed(*host)
+
 	// Load configuration
-	appConfig := config.NewAppConfig(*configPath)
+	appConfig := config.NewAppConfig(resolvedPath)
 	if err := appConfig.Load(); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	
+
 	// Create VPN manager
 	vpnManager := vpn.NewManager()
-	
+
 	// Автозапуск оболочки: ярлык лежит в доме пользователя, а backend работает
 	// от root — поэтому менеджеру нужен путь конфига, по владельцу которого он
 	// опознаёт пользователя рабочего стола.
-	autostartMgr := autostart.NewManager(*configPath, *desktopExe)
-	
+	autostartMgr := autostart.NewManager(resolvedPath, *desktopExe)
+
 	// Create API server
 	server := api.NewServer(appConfig, vpnManager, autostartMgr)
 	server.StartPingLoop()
-	
-	// Автоподключение: подключаемся к конфигу, выбранному на главном экране.
-	// Если выбирать нечего (конфигов ещё нет), просто ничего не делаем —
-	// настройка остаётся включённой и сработает при следующем запуске.
-	if autoConnectID := appConfig.GetAutoconnectConfigID(); autoConnectID != "" {
-		cfg := appConfig.GetConfig(autoConnectID)
-		if cfg != nil {
-			log.Printf("Autoconnecting to %s...", cfg.Name)
-			go func() {
-				// Small delay to let the server start
-				time.Sleep(500 * time.Millisecond)
-				if err := vpnManager.Connect(cfg, &appConfig.Routing); err != nil {
-					log.Printf("Autoconnect failed: %v", err)
-				}
-			}()
-		}
-	} else if appConfig.GetSettings().Autoconnect {
-		log.Printf("Autoconnect включён, но конфиг не выбран — пропускаем")
-	}
+
+	autoconnect(appConfig, vpnManager)
 
 	// Статический UI на том же порту: фронтенд обращается к API по адресу
 	// страницы, поэтому один origin — обязательное условие для оболочки.
@@ -97,31 +113,84 @@ func main() {
 	if *parentPID > 0 {
 		go watchParent(*parentPID)
 	}
-	
-	// Start HTTP server
+
 	log.Printf("Starting API server on %s:%d", *host, *port)
-	
-	// Handle shutdown gracefully
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-		
-		log.Println("Shutting down...")
-		
-		// Disconnect VPN if connected
-		status := vpnManager.GetStatus()
-		if status.State != vpn.StateDisconnected {
-			log.Println("Disconnecting VPN...")
-			vpnManager.Disconnect()
-		}
-		
-		os.Exit(0)
-	}()
-	
-	if err := listenAndServe(*host, *port, server); err != nil {
+
+	if err := serve(*host, *port, server, vpnManager); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// resolveConfigPath доводит путь конфига до пригодного к использованию:
+// подставляет значение по умолчанию и создаёт каталог.
+func resolveConfigPath(path string) (string, error) {
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("не удалось определить домашний каталог: %w", err)
+		}
+		path = filepath.Join(home, ".config", "awg-client", "config.json")
+	}
+
+	// 0700: внутри лежат приватные ключи всех подключений.
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", fmt.Errorf("не удалось создать каталог настроек: %w", err)
+	}
+
+	return path, nil
+}
+
+// warnIfExposed предупреждает о запуске на адресе, доступном извне машины.
+//
+// Запрещать не стали — сценарии вроде проброса через ssh существуют, — но
+// молчать здесь нельзя: у API нет аутентификации, работает он от root, и
+// GET /api/configs отдаёт приватные ключи всех подключений.
+func warnIfExposed(host string) {
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "":
+		return
+	}
+
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return
+	}
+
+	log.Printf("ВНИМАНИЕ: API открыт на %s, а не только на этой машине. "+
+		"У него нет аутентификации, и он отдаёт приватные ключи всех конфигураций — "+
+		"любой, кто дотянется до этого адреса, получит их и сможет управлять VPN", host)
+}
+
+// autoconnect подключается к конфигу, выбранному на главном экране.
+//
+// Если выбирать нечего (конфигов ещё нет), просто ничего не делаем — настройка
+// остаётся включённой и сработает при следующем запуске.
+func autoconnect(appConfig *config.AppConfig, vpnManager *vpn.Manager) {
+	id := appConfig.GetAutoconnectConfigID()
+	if id == "" {
+		if appConfig.GetSettings().Autoconnect {
+			log.Printf("Autoconnect включён, но конфиг не выбран — пропускаем")
+		}
+		return
+	}
+
+	cfg := appConfig.GetConfig(id)
+	if cfg == nil {
+		return
+	}
+
+	log.Printf("Autoconnecting to %s...", cfg.Name)
+
+	// Копию правил берём через геттер: поле Routing защищено мьютексом
+	// конфига, а прямое обращение к нему из горутины — гонка с любым
+	// изменением правил из интерфейса.
+	routing := appConfig.GetRouting()
+
+	go func() {
+		time.Sleep(autoconnectDelay)
+		if err := vpnManager.Connect(cfg, &routing); err != nil {
+			log.Printf("Autoconnect failed: %v", err)
+		}
+	}()
 }
 
 // watchParent завершает процесс, когда родительская оболочка исчезла.
@@ -132,7 +201,10 @@ func watchParent(pid int) {
 		return
 	}
 
-	for range time.Tick(2 * time.Second) {
+	ticker := time.NewTicker(parentPollInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
 		if err := proc.Signal(syscall.Signal(0)); err != nil {
 			log.Printf("Родительский процесс %d завершился — выходим", pid)
 			// SIGTERM самому себе: в обработчике уже написано корректное
@@ -143,20 +215,88 @@ func watchParent(pid int) {
 	}
 }
 
-// listenAndServe открывает слушающие сокеты и обслуживает их одним handler'ом.
+// serve обслуживает запросы до сигнала завершения и корректно всё разбирает.
 //
-// Для loopback поднимаются ОБА адреса — 127.0.0.1 и ::1. Это важно: в браузере
+// Порядок при остановке важен: сначала перестаём принимать новые запросы,
+// потом разбираем туннель. Наоборот — значит дать интерфейсу поднять его
+// заново ровно между двумя шагами.
+func serve(host string, port int, handler http.Handler, vpnManager *vpn.Manager) error {
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		ErrorLog:          log.Default(),
+	}
+
+	listeners, err := listen(host, port)
+	if err != nil {
+		return err
+	}
+
+	// Буфер на каждый слушатель: горутина обязана суметь отдать ошибку и
+	// завершиться, даже если её никто уже не читает.
+	errCh := make(chan error, len(listeners))
+	for _, ln := range listeners {
+		go func(ln net.Listener) {
+			errCh <- server.Serve(ln)
+		}(ln)
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		// Serve вернулся сам — это отказ: сокет закрыли извне, кончились
+		// дескрипторы. Туннель всё равно разбираем, иначе он останется
+		// поднятым без единого способа им управлять.
+		shutdownVPN(vpnManager)
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+
+	case sig := <-signals:
+		log.Printf("Получен сигнал %s — завершаемся", sig)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Сервер остановлен принудительно: %v", err)
+	}
+
+	shutdownVPN(vpnManager)
+	return nil
+}
+
+// shutdownVPN разбирает туннель, если он поднят: снимает маршруты и
+// возвращает системе прежние серверы имён.
+func shutdownVPN(vpnManager *vpn.Manager) {
+	if vpnManager.GetStatus().State == vpn.StateDisconnected {
+		return
+	}
+
+	log.Println("Disconnecting VPN...")
+	if err := vpnManager.Disconnect(); err != nil {
+		log.Printf("Не удалось корректно отключить VPN: %v", err)
+	}
+}
+
+// listen открывает слушающие сокеты.
+//
+// Для loopback открываются ОБА адреса — 127.0.0.1 и ::1. Это важно: в браузере
 // "localhost" часто резолвится в ::1 первым, и запрос к сокету, открытому
 // только на IPv4, не доходит вообще (в вебе это видно как NetworkError).
-func listenAndServe(host string, port int, handler http.Handler) error {
+func listen(host string, port int) ([]net.Listener, error) {
 	hosts := []string{host}
 	switch host {
 	case "localhost", "127.0.0.1", "::1":
 		hosts = []string{"127.0.0.1", "::1"}
 	}
 
-	errCh := make(chan error, len(hosts))
-	started := 0
+	var listeners []net.Listener
 
 	for _, h := range hosts {
 		addr := net.JoinHostPort(h, strconv.Itoa(port))
@@ -165,7 +305,7 @@ func listenAndServe(host string, port int, handler http.Handler) error {
 		if err != nil {
 			// Единственный адрес не открылся — это фатально.
 			if len(hosts) == 1 {
-				return err
+				return nil, err
 			}
 			// Один из loopback-адресов может отсутствовать (например, IPv6
 			// выключен в ядре) — этого достаточно, чтобы продолжить.
@@ -173,17 +313,13 @@ func listenAndServe(host string, port int, handler http.Handler) error {
 			continue
 		}
 
-		started++
+		listeners = append(listeners, ln)
 		log.Printf("Listening on http://%s", addr)
-
-		go func(ln net.Listener) {
-			errCh <- http.Serve(ln, handler)
-		}(ln)
 	}
 
-	if started == 0 {
-		return fmt.Errorf("no listening socket could be opened on port %d", port)
+	if len(listeners) == 0 {
+		return nil, fmt.Errorf("no listening socket could be opened on port %d", port)
 	}
 
-	return <-errCh
+	return listeners, nil
 }

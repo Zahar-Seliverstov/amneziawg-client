@@ -15,6 +15,8 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/dnsproxy"
+	"github.com/user/amnezia-web-client/internal/routing"
 )
 
 // ConnectionState represents the VPN connection state
@@ -57,7 +59,6 @@ type Manager struct {
 	// Туннель работает внутри этого же процесса: ядро amneziawg-go
 	// подключено библиотекой, а не запущено отдельным бинарником.
 	dev    *device.Device
-	ctx    context.Context
 	cancel context.CancelFunc
 
 	// done закрывается, когда горутина соединения полностью завершилась.
@@ -68,32 +69,62 @@ type Manager struct {
 	// connectMu сериализует подключение и отключение между собой.
 	connectMu sync.Mutex
 
-	// Configuration
+	// interfaceName — имя интерфейса. Меняется один раз, при создании TUN
+	// (ядро вправе выдать не то имя, которое просили), но читается из чужих
+	// горутин, поэтому живёт под mu — см. ifname.
 	interfaceName string
 
 	// Callbacks
 	statusCallbacks []StatusCallback
 	callbackMu      sync.RWMutex
 
-	// DNS resolver for split tunneling domains
-	dnsResolver *net.Resolver
+	// notify — очередь оповещений о смене состояния, см. notifyLoop.
+	notify chan ConnectionStatus
 
-	// Маршруты, которые поставили мы сами. Нужны, чтобы при изменении правил
-	// снять ровно свои записи и не тронуть чужие.
+	// routeMu защищает всё, что трогает таблицу маршрутизации и системный DNS:
+	// и учёт installedRoutes, и саму последовательность «снять старое —
+	// поставить новое». Без этого пересборка правил из интерфейса могла
+	// вклиниться в первичную настройку маршрутов при подключении.
+	routeMu sync.Mutex
+
+	// installedRoutes — маршруты, которые поставили мы сами. Нужны, чтобы при
+	// изменении правил снять ровно свои записи и не тронуть чужие.
+	// Только под routeMu.
 	installedRoutes [][]string
-	routeMu         sync.Mutex
+
+	// dns подменяет системные серверы имён на время соединения.
+	dns dnsControl
+
+	// Маршрутизация по доменам и зонам — см. nameroutes.go. Живёт только
+	// пока поднят туннель, поэтому хранится здесь, а не создаётся в NewManager.
+	dnsProxy      *dnsproxy.Proxy
+	dynamicRoutes *routing.DynamicSet
+	sweepStop     chan struct{}
 }
+
+// statusQueue — глубина очереди оповещений. За соединение их единицы плюс
+// счётчики раз в несколько секунд, так что запас огромен: если очередь всё же
+// переполнилась, значит подписчик не разбирает её вовсе.
+const statusQueue = 64
 
 // NewManager creates a new VPN manager
 func NewManager() *Manager {
-	return &Manager{
+	m := &Manager{
 		status: ConnectionStatus{
 			State: StateDisconnected,
 		},
 		interfaceName:   "awg0",
 		statusCallbacks: []StatusCallback{},
-		dnsResolver:     net.DefaultResolver,
+		notify:          make(chan ConnectionStatus, statusQueue),
 	}
+
+	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
+	// resolv.conf, указывающим на исчезнувший адрес туннеля.
+	restoreOrphanedDNS()
+
+	go m.notifyLoop()
+
+	return m
 }
 
 // OnStatusChange registers a callback for status changes
@@ -103,15 +134,33 @@ func (m *Manager) OnStatusChange(callback StatusCallback) {
 	m.statusCallbacks = append(m.statusCallbacks, callback)
 }
 
-// notifyStatusChange notifies all callbacks of status change
+// notifyStatusChange ставит текущее состояние в очередь на рассылку.
+//
+// Постановка в очередь, а не прямой вызов: подписчик пишет в WebSocket, и
+// зависший клиент задерживал бы сам туннель на время таймаута записи.
 func (m *Manager) notifyStatusChange() {
-	m.callbackMu.RLock()
-	callbacks := m.statusCallbacks
-	m.callbackMu.RUnlock()
+	select {
+	case m.notify <- m.GetStatus():
+	default:
+		log.Printf("Очередь оповещений переполнена — состояние пропущено")
+	}
+}
 
-	status := m.GetStatus()
-	for _, cb := range callbacks {
-		go cb(status)
+// notifyLoop разбирает очередь оповещений.
+//
+// Одна горутина и строгий порядок принципиальны. Раньше на каждого подписчика
+// запускалась своя, и порядок доставки ничем не удерживался: «подключено»
+// могло прийти в интерфейс ПОСЛЕ «отключено», и кнопка залипала в неверном
+// состоянии до следующего события.
+func (m *Manager) notifyLoop() {
+	for status := range m.notify {
+		m.callbackMu.RLock()
+		callbacks := m.statusCallbacks
+		m.callbackMu.RUnlock()
+
+		for _, cb := range callbacks {
+			cb(status)
+		}
 	}
 }
 
@@ -120,6 +169,13 @@ func (m *Manager) GetStatus() ConnectionStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.status
+}
+
+// ifname возвращает имя интерфейса туннеля.
+func (m *Manager) ifname() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.interfaceName
 }
 
 // Connect поднимает соединение с указанным конфигом.
@@ -154,7 +210,7 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	m.ctx, m.cancel, m.done = ctx, cancel, done
+	m.cancel, m.done = cancel, done
 	m.mu.Unlock()
 
 	m.notifyStatusChange()
@@ -181,9 +237,11 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 		mtu = device.DefaultMTU
 	}
 
-	tunDev, err := tun.CreateTUN(m.interfaceName, mtu)
+	ifname := m.ifname()
+
+	tunDev, err := tun.CreateTUN(ifname, mtu)
 	if err != nil {
-		m.setError(fmt.Errorf("не удалось создать интерфейс %s: %w", m.interfaceName, err))
+		m.setError(fmt.Errorf("не удалось создать интерфейс %s: %w", ifname, err))
 		return
 	}
 
@@ -224,9 +282,20 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 	// Состояние остаётся «подключение», пока не состоялось рукопожатие:
 	// поднятый интерфейс сам по себе ещё ничего не значит. Маршруты тоже
 	// ставятся только после него.
-	go m.watchDevice(ctx, dev, cfg, routing)
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		m.watchDevice(ctx, dev, cfg, routing)
+	}()
 
 	<-dev.Wait()
+
+	// Наблюдатель обязан завершиться ДО уборки (она в defer выше). Он ставит
+	// маршруты и подменяет системный DNS, и закрытие устройства его не
+	// останавливает мгновенно: успей он сделать это после уборки — записи
+	// остались бы в системе до перезагрузки, уводя трафик в исчезнувший
+	// интерфейс.
+	<-watching
 }
 
 // deviceLogger направляет журнал ядра в общий лог приложения. Штатный
@@ -416,7 +485,7 @@ func parseDeviceStats(state string) deviceStats {
 // configureLink поднимает интерфейс и вешает на него адреса. Маршрутов здесь
 // нет намеренно — см. configureTraffic.
 func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
-	ifname := m.interfaceName
+	ifname := m.ifname()
 
 	for _, addr := range cfg.Interface.Address {
 		if err := runCmd("ip", "address", "add", addr, "dev", ifname); err != nil {
@@ -434,19 +503,38 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 
 // configureTraffic перенаправляет трафик в туннель и переключает DNS.
 //
-// Вынесено отдельно, потому что вызывается ПОСЛЕ рукопожатия. Раньше
-// маршруты ставились сразу, и мёртвый конфиг забирал весь трафик в туннель,
-// который никуда не ведёт: пользователь оставался без интернета всё время
-// ожидания. Рукопожатию маршруты не нужны — оно идёт по обычному пути.
-func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) error {
-	if err := m.configureRouting(cfg, routing); err != nil {
+// Вызывается ПОСЛЕ рукопожатия. Раньше маршруты ставились сразу, и мёртвый
+// конфиг забирал весь трафик в туннель, который никуда не ведёт: пользователь
+// оставался без интернета всё время ожидания. Рукопожатию маршруты не нужны —
+// оно идёт по обычному пути.
+//
+// Та же самая функция пересобирает маршрутизацию на живом туннеле, когда
+// правила поменяли из интерфейса: последовательность действий там ровно та
+// же, а два её отдельных списка успели разъехаться.
+func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routingCfg *config.RoutingConfig) error {
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
+
+	// Посредник имён пересобирается целиком: правила по именам могли
+	// появиться, исчезнуть или поменять направление вместе с режимом.
+	// При первичной настройке оба вызова — пустая работа.
+	m.stopNameRouting()
+	m.flushRoutes()
+
+	if err := m.configureRouting(cfg, routingCfg); err != nil {
 		return fmt.Errorf("failed to configure routing: %w", err)
 	}
 
-	if len(cfg.Interface.DNS) > 0 {
-		if err := m.configureDNS(cfg.Interface.DNS); err != nil {
-			log.Printf("Warning: failed to configure DNS: %v", err)
-		}
+	// Правила по доменам и зонам обслуживает посредник DNS: адреса для них
+	// становятся известны только из ответов на запросы пользователя.
+	// Не поднялся — работаем как раньше, с прямым DNS из конфига.
+	servers := cfg.Interface.DNS
+	if proxyAddr, ok := m.startNameRouting(cfg, routingCfg); ok {
+		servers = []string{proxyAddr.String()}
+	}
+
+	if err := m.dns.Apply(m.ifname(), servers); err != nil {
+		log.Printf("Warning: failed to configure DNS: %v", err)
 	}
 
 	return nil
@@ -576,7 +664,7 @@ func hexEncodeKey(base64Key string) string {
 
 // addRoute добавляет маршрут и запоминает его, если добавление удалось.
 // Уже существующие чужие маршруты (RTNETLINK "File exists") не запоминаются,
-// поэтому при пересборке мы их не удалим.
+// поэтому при пересборке мы их не удалим. Вызывать под routeMu.
 func (m *Manager) addRoute(args ...string) error {
 	if err := runCmd("ip", append([]string{"route", "add"}, args...)...); err != nil {
 		return err
@@ -587,6 +675,7 @@ func (m *Manager) addRoute(args ...string) error {
 }
 
 // flushRoutes снимает все маршруты, поставленные нами, в обратном порядке.
+// Вызывать под routeMu.
 func (m *Manager) flushRoutes() {
 	for i := len(m.installedRoutes) - 1; i >= 0; i-- {
 		runCmd("ip", append([]string{"route", "del"}, m.installedRoutes[i]...)...)
@@ -597,9 +686,6 @@ func (m *Manager) flushRoutes() {
 // ApplyRouting перестраивает маршруты на живом туннеле.
 // Если туннель не поднят — ничего не делает: правила применятся при подключении.
 func (m *Manager) ApplyRouting(routing *config.RoutingConfig) error {
-	m.routeMu.Lock()
-	defer m.routeMu.Unlock()
-
 	m.mu.RLock()
 	state := m.status.State
 	cfg := m.activeConfig
@@ -610,9 +696,8 @@ func (m *Manager) ApplyRouting(routing *config.RoutingConfig) error {
 	}
 
 	log.Printf("Re-applying routing rules on live tunnel")
-	m.flushRoutes()
 
-	if err := m.configureRouting(cfg, routing); err != nil {
+	if err := m.configureTraffic(cfg, routing); err != nil {
 		return fmt.Errorf("failed to re-apply routing: %w", err)
 	}
 
@@ -624,9 +709,19 @@ func (m *Manager) ApplyRouting(routing *config.RoutingConfig) error {
 	return nil
 }
 
-// configureRouting sets up routing based on configuration
+// configureRouting sets up routing based on configuration. Вызывать под routeMu.
 func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) error {
-	ifname := m.interfaceName
+	ifname := m.ifname()
+
+	// Правила по доменам резолвим через серверы имён из конфига НАПРЯМУЮ,
+	// минуя системный резолвер.
+	//
+	// Через системный нельзя: пересборка правил на живом туннеле начинается с
+	// остановки нашего же посредника DNS, а resolv.conf в этот момент всё ещё
+	// указывает на него. Запрос уходил бы в мёртвый сокет, и правила по
+	// доменам молча оставались без маршрутов — со стороны это выглядело как
+	// «удалил одно правило, перестали работать все остальные».
+	resolver := resolverFor(parseDNSServers(cfg.Interface.DNS))
 
 	// Get the peer's allowed IPs
 	var peerAllowedIPs []string
@@ -663,7 +758,7 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 				continue
 			}
 
-			ips, err := m.resolveRoutingRule(rule)
+			ips, err := m.resolveRoutingRule(rule, resolver)
 			if err != nil {
 				log.Printf("Warning: failed to resolve rule %s: %v", rule.Value, err)
 				continue
@@ -689,7 +784,7 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 				continue
 			}
 
-			ips, err := m.resolveRoutingRule(rule)
+			ips, err := m.resolveRoutingRule(rule, resolver)
 			if err != nil {
 				log.Printf("Warning: failed to resolve rule %s: %v", rule.Value, err)
 				continue
@@ -716,9 +811,9 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 }
 
 // resolveRoutingRule resolves a routing rule to IP addresses/CIDRs
-func (m *Manager) resolveRoutingRule(rule config.RoutingRule) ([]string, error) {
+func (m *Manager) resolveRoutingRule(rule config.RoutingRule, resolver *net.Resolver) ([]string, error) {
 	switch rule.Type {
-	case "ip":
+	case config.RuleTypeIP:
 		// Single IP - add /32 suffix if no mask
 		if !strings.Contains(rule.Value, "/") {
 			if strings.Contains(rule.Value, ":") {
@@ -728,12 +823,18 @@ func (m *Manager) resolveRoutingRule(rule config.RoutingRule) ([]string, error) 
 		}
 		return []string{rule.Value}, nil
 
-	case "cidr":
+	case config.RuleTypeCIDR:
 		return []string{rule.Value}, nil
 
-	case "domain":
-		// Resolve domain to IPs
-		ips, err := m.dnsResolver.LookupIP(context.Background(), "ip", rule.Value)
+	case config.RuleTypeDomain:
+		// Разовый резолв нужен ради быстрого старта: маршрут появляется сразу
+		// при подключении, не дожидаясь, пока пользователь откроет сайт.
+		// Поддерживает же правило в актуальном состоянии посредник DNS
+		// (nameroutes.go) — адреса за именем меняются, и одного резолва мало.
+		ctx, cancel := context.WithTimeout(context.Background(), ruleResolveTimeout)
+		defer cancel()
+
+		ips, err := resolver.LookupIP(ctx, "ip", rule.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -748,11 +849,11 @@ func (m *Manager) resolveRoutingRule(rule config.RoutingRule) ([]string, error) 
 		}
 		return result, nil
 
-	case "zone":
-		// Domain zone (like .ru, .com) - we can't really route these by IP
-		// This would need DNS-based routing which is complex
-		// For now, log a warning
-		log.Printf("Warning: zone-based routing (%s) requires DNS interception, not implemented", rule.Value)
+	case config.RuleTypeZone:
+		// У зоны нет заранее известных адресов: под .ru подпадают миллионы
+		// имён, перечислить их невозможно. Такие правила целиком на
+		// посреднике DNS — он ставит маршрут в тот момент, когда имя из зоны
+		// действительно спросили. Здесь ставить нечего.
 		return nil, nil
 
 	default:
@@ -762,7 +863,7 @@ func (m *Manager) resolveRoutingRule(rule config.RoutingRule) ([]string, error) 
 
 // setupDefaultVPNRoute sets up routing all traffic through VPN
 func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
-	ifname := m.interfaceName
+	ifname := m.ifname()
 
 	// Адрес сервера VPN должен идти В ОБХОД туннеля, иначе получится петля.
 	// Endpoint может быть именем хоста — резолвим его, пока DNS ещё исправен.
@@ -802,15 +903,26 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 
 	// Две /1-подсети вместо 0.0.0.0/0: перекрывают весь адресный простор,
 	// но не конфликтуют с существующим маршрутом по умолчанию.
-	m.addRoute("0.0.0.0/1", "dev", ifname)
-	m.addRoute("128.0.0.0/1", "dev", ifname)
+	//
+	// Отказ здесь — это отказ полного туннеля целиком, поэтому он ошибка, а
+	// не предупреждение: молча оставить весь трафик вне VPN нельзя, ради него
+	// пользователь и подключался.
+	if err := m.addRoute("0.0.0.0/1", "dev", ifname); err != nil {
+		return fmt.Errorf("не удалось направить трафик в туннель: %w", err)
+	}
+	if err := m.addRoute("128.0.0.0/1", "dev", ifname); err != nil {
+		return fmt.Errorf("не удалось направить трафик в туннель: %w", err)
+	}
 
 	// IPv6 заворачиваем в туннель ТОЛЬКО если у интерфейса есть IPv6-адрес.
 	// Иначе маршрут ведёт в никуда: браузер по AAAA-записи уходит в IPv6,
 	// упирается в чёрную дыру и сайт не открывается, хотя IPv4 живой.
 	if hasIPv6Address(cfg.Interface.Address) {
-		m.addRoute("::/1", "dev", ifname)
-		m.addRoute("8000::/1", "dev", ifname)
+		for _, prefix := range []string{"::/1", "8000::/1"} {
+			if err := m.addRoute(prefix, "dev", ifname); err != nil {
+				log.Printf("Warning: failed to add IPv6 route %s: %v", prefix, err)
+			}
+		}
 	}
 
 	return nil
@@ -899,33 +1011,6 @@ func isIPv6Dest(dest string) bool {
 	return strings.Contains(dest, ":")
 }
 
-// configureDNS sets up DNS servers
-func (m *Manager) configureDNS(servers []string) error {
-	// Use resolvconf if available
-	if _, err := exec.LookPath("resolvconf"); err == nil {
-		cmd := exec.Command("resolvconf", "-a", m.interfaceName, "-m", "0", "-x")
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			return err
-		}
-
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-
-		for _, server := range servers {
-			fmt.Fprintf(stdin, "nameserver %s\n", server)
-		}
-		stdin.Close()
-
-		return cmd.Wait()
-	}
-
-	// Fallback: modify /etc/resolv.conf directly (not ideal)
-	log.Println("Warning: resolvconf not available, DNS might not be configured")
-	return nil
-}
-
 // Disconnect stops the VPN connection
 func (m *Manager) Disconnect() error {
 	m.connectMu.Lock()
@@ -957,6 +1042,11 @@ func (m *Manager) teardown() {
 		<-done
 	}
 
+	// Уборку зовём ещё раз намеренно, хотя горутина соединения свою уже
+	// сделала. Она сохраняет состояние ошибки — чтобы причина осталась на
+	// экране, а не сменилась безмолвным «Отключено». Здесь же отключение
+	// запрошено явно, и состояние обязано стать «Отключено»: без этого
+	// повторный вызов сюда навсегда упирался бы в StateError.
 	m.cleanup()
 }
 
@@ -964,15 +1054,14 @@ func (m *Manager) teardown() {
 // а вместе с ним из системы исчезает сам интерфейс — отдельно удалять его
 // командой больше не нужно.
 func (m *Manager) closeDevice() {
-	if m.cancel != nil {
-		m.cancel()
-	}
-
 	m.mu.Lock()
-	dev := m.dev
+	cancel, dev := m.cancel, m.dev
 	m.dev = nil
 	m.mu.Unlock()
 
+	if cancel != nil {
+		cancel()
+	}
 	if dev != nil {
 		dev.Close()
 	}
@@ -980,16 +1069,21 @@ func (m *Manager) closeDevice() {
 
 // cleanup cleans up after disconnection
 func (m *Manager) cleanup() {
-	// Сначала снимаем свои маршруты. Записи "via <шлюз>" висят на физическом
-	// интерфейсе и удалением awg0 не убираются — без этого они копились бы
-	// после каждого отключения.
+	// Всё, что трогает таблицу маршрутизации, — под одной блокировкой:
+	// иначе пересборка правил из интерфейса могла бы вклиниться в уборку и
+	// поставить маршруты на уже разбираемый туннель.
 	m.routeMu.Lock()
+	// Посредник DNS останавливается первым: он ставит маршруты сам, и его
+	// последний ответ не должен обогнать уборку.
+	m.stopNameRouting()
+	// Записи "via <шлюз>" висят на физическом интерфейсе и удалением awg0 не
+	// убираются — без этого они копились бы после каждого отключения.
 	m.flushRoutes()
 	m.routeMu.Unlock()
 
 	// Интерфейс удалять не нужно: TUN закрывается вместе с устройством и
 	// исчезает из системы сам. Осталось вернуть DNS.
-	exec.Command("resolvconf", "-d", m.interfaceName).Run()
+	m.dns.Restore()
 
 	m.mu.Lock()
 	// Состояние ошибки сохраняем: раньше cleanup затирал его на
@@ -1004,7 +1098,6 @@ func (m *Manager) cleanup() {
 
 	m.activeConfig = nil
 	m.routingConfig = nil
-	m.installedRoutes = nil
 	m.mu.Unlock()
 
 	m.notifyStatusChange()
