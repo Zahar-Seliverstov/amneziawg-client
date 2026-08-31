@@ -8,7 +8,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
-mod autostart;
 mod tray;
 
 use std::io;
@@ -250,14 +249,10 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // Значок трея рисует libayatana-appindicator, и она подгружается
-            // на лету: если её в системе нет, обёртка паникует. Приложение
-            // из-за отсутствующего значка падать не должно.
-            let tray = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tray::setup(&handle)));
-            if let Ok(Err(e)) = &tray {
+            // Значок показывает оболочка рабочего стола, и поддержки SNI в
+            // ней может не быть. Приложение из-за этого падать не должно.
+            if let Err(e) = tray::setup(&handle) {
                 eprintln!("Трей недоступен: {e}");
-            } else if tray.is_err() {
-                eprintln!("Трей недоступен: не найдена libayatana-appindicator");
             }
 
             // Окно объявлено скрытым: так автозапуск не мигает им при входе,
@@ -265,6 +260,14 @@ fn main() {
             if !started_hidden() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
+                }
+            }
+
+            // Значок приложения и так стоит в трее и в панели задач — в
+            // заголовке окна он лишний. GTK иначе подставит свой дефолтный.
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(gtk_window) = window.gtk_window() {
+                    gtk::prelude::GtkWindowExt::set_icon(&gtk_window, None::<&gtk::gdk_pixbuf::Pixbuf>);
                 }
             }
 

@@ -49,7 +49,11 @@ pub fn configs() -> io::Result<Vec<Config>> {
 }
 
 pub fn connect(config_id: &str) -> io::Result<()> {
-    let body = format!("{{\"config_id\":\"{}\"}}", config_id.replace('"', ""));
+    // Тело собирает serde_json, а не format!. Идентификатор приходит из
+    // ответа backend'а, но склеивать JSON строками всё равно нельзя: вырезание
+    // кавычек руками — это ровно тот приём, который однажды пропускает
+    // управляющий символ и превращает запрос в другой запрос.
+    let body = serde_json::json!({ "config_id": config_id }).to_string();
     request("POST", "/api/vpn/connect", Some(&body)).map(|_| ())
 }
 

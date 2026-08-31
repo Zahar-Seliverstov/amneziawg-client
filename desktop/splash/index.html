@@ -11,12 +11,19 @@
     -webkit-user-select: none; user-select: none;
   }
   .box { text-align: center; max-width: 32rem; padding: 2rem; }
-  .ring {
-    width: 34px; height: 34px; margin: 0 auto 1.25rem;
-    border: 3px solid #2a3040; border-top-color: #4c8dff; border-radius: 50%;
-    animation: spin .8s linear infinite;
+  /* Пульсация вместо спиннера: логотип сам показывает, что идёт запуск. */
+  .logo {
+    display: block; margin: 0 auto 1.25rem; width: 72px; height: 72px;
+    background-color: #ffffff;
+    -webkit-mask: url('./logo-mono.svg') no-repeat center / contain;
+    mask: url('./logo-mono.svg') no-repeat center / contain;
+    animation: breathe 1.8s ease-in-out infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes breathe {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .72; transform: scale(.94); }
+  }
+  @media (prefers-reduced-motion: reduce) { .logo { animation: none; } }
   h1 { font-size: 1rem; font-weight: 600; margin: 0 0 .35rem; }
   p { margin: 0; color: #9aa3b5; }
   pre {
@@ -24,10 +31,10 @@
     background: #171a21; border: 1px solid #262b36; border-radius: 6px;
     color: #ff8f8f; font-size: 12px;
   }
-  .error .ring { display: none; }
+  .error .logo { animation: none; opacity: .45; }
 </style>
 <div class="box" id="box">
-  <div class="ring"></div>
+  <span class="logo" aria-hidden="true"></span>
   <h1 id="title">Запуск службы AmneziaWG…</h1>
   <p id="hint">Подтвердите права администратора — они нужны для TUN-интерфейса и маршрутов.</p>
   <pre id="detail" hidden></pre>

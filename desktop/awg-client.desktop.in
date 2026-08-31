@@ -8,4 +8,4 @@ Icon=awg-client
 Terminal=false
 Categories=Network;Security;
 Keywords=VPN;AmneziaWG;WireGuard;
-StartupWMClass=AWG Client
+StartupWMClass=awg-client-desktop
