@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,9 +24,13 @@ import (
 type ConnectionState string
 
 const (
-	StateDisconnected  ConnectionState = "disconnected"
-	StateConnecting    ConnectionState = "connecting"
-	StateConnected     ConnectionState = "connected"
+	StateDisconnected ConnectionState = "disconnected"
+	StateConnecting   ConnectionState = "connecting"
+	StateConnected    ConnectionState = "connected"
+	// StateReconnecting — туннель был поднят и оборвался, идёт восстановление.
+	// Отдельное состояние, а не «подключение»: пользователь должен видеть, что
+	// связь потеряна, а не что он сам только что нажал кнопку.
+	StateReconnecting  ConnectionState = "reconnecting"
 	StateDisconnecting ConnectionState = "disconnecting"
 	StateError         ConnectionState = "error"
 )
@@ -38,6 +43,10 @@ type ConnectionStatus struct {
 	ConnectedAt *time.Time      `json:"connected_at,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	Interface   string          `json:"interface,omitempty"`
+
+	// Attempt — номер идущей попытки подключения. Ноль, когда соединение
+	// установлено или его нет вовсе.
+	Attempt int `json:"attempt,omitempty"`
 
 	// Statistics
 	BytesReceived uint64     `json:"bytes_received"`
@@ -95,6 +104,11 @@ type Manager struct {
 	// dns подменяет системные серверы имён на время соединения.
 	dns dnsControl
 
+	// Паузы между попытками переподключения. Поля, а не константы: иначе
+	// проверить политику повторов можно было бы только реальным ожиданием
+	// в секундах.
+	reconnectMin, reconnectMax time.Duration
+
 	// Маршрутизация по доменам и зонам — см. nameroutes.go. Живёт только
 	// пока поднят туннель, поэтому хранится здесь, а не создаётся в NewManager.
 	dnsProxy      *dnsproxy.Proxy
@@ -116,6 +130,8 @@ func NewManager() *Manager {
 		interfaceName:   "awg0",
 		statusCallbacks: []StatusCallback{},
 		notify:          make(chan ConnectionStatus, statusQueue),
+		reconnectMin:    reconnectMinDelay,
+		reconnectMax:    reconnectMaxDelay,
 	}
 
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
@@ -191,8 +207,10 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 	state, current := m.status.State, m.status.ConfigID
 	m.mu.RUnlock()
 
-	// Уже подключены или подключаемся к нему же — делать нечего.
-	if current == cfg.ID && (state == StateConnected || state == StateConnecting) {
+	// Уже подключены, подключаемся или переподключаемся к нему же — делать
+	// нечего. Переподключение считается тем же соединением: прерывать его
+	// ради того же самого конфига значит начинать всё сначала без причины.
+	if current == cfg.ID && (state == StateConnected || state == StateConnecting || state == StateReconnecting) {
 		return nil
 	}
 
@@ -204,6 +222,7 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 		ConfigID:   cfg.ID,
 		ConfigName: cfg.Name,
 		Interface:  m.interfaceName,
+		Attempt:    1,
 	}
 	m.activeConfig = cfg
 	m.routingConfig = routing
@@ -217,20 +236,130 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 
 	go func() {
 		defer close(done)
-		m.runConnection(ctx, cfg, routing)
+		m.supervise(ctx, cfg, routing)
 	}()
 
 	return nil
 }
 
-// runConnection поднимает туннель и держит его до отключения.
+// Пределы переподключения.
+const (
+	// deadPeerTimeout — сколько молчания считаем разрывом. Ядро WireGuard
+	// пересогласовывает ключи каждые две минуты, поэтому живой пир не молчит
+	// дольше этого срока при любой нагрузке; три минуты — уверенный разрыв,
+	// а не задержка в сети.
+	deadPeerTimeout = 180 * time.Second
+
+	reconnectMinDelay = 1 * time.Second
+	reconnectMaxDelay = 60 * time.Second
+
+	// initialConnectAttempts — сколько раз пробуем поднять соединение,
+	// которое ещё ни разу не состоялось.
+	//
+	// Здесь предел нужен, а при разрыве уже работавшего туннеля — нет. Разница
+	// принципиальная: туннель, который однажды поднялся, доказал, что и ключи
+	// верны, и сервер жив, поэтому молчание — это сеть, и ждать её можно
+	// сколько угодно. Соединение, не состоявшееся ни разу, скорее всего
+	// сломано по-настоящему (истёк ключ, сменился адрес сервера), и вечно
+	// стучаться в него значит прятать от пользователя причину отказа.
+	initialConnectAttempts = 3
+)
+
+// fatalError — отказ, который повторной попыткой не лечится.
+type fatalError struct{ err error }
+
+func (e fatalError) Error() string { return e.err.Error() }
+func (e fatalError) Unwrap() error { return e.err }
+
+func isFatal(err error) bool {
+	var f fatalError
+	return errors.As(err, &f)
+}
+
+// supervise держит соединение живым: поднимает туннель, а когда тот падает —
+// поднимает заново.
+//
+// Раньше переподключения не было вовсе. После рукопожатия наблюдатель только
+// считал байты, поэтому пропавший сервер, отозванный ключ или смена сети
+// оставляли состояние «Подключено» навсегда: маршруты стоят, трафик уходит в
+// никуда, и ни ошибки, ни попытки восстановиться.
+func (m *Manager) supervise(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) {
+	defer m.finish()
+
+	m.retryLoop(ctx, func(ctx context.Context) (bool, error) {
+		return m.runConnection(ctx, cfg, routing)
+	})
+}
+
+// connectAttempt — одна попытка поднять туннель. Возвращает признак
+// состоявшегося рукопожатия и причину, по которой всё закончилось.
+//
+// Отдельный тип, а не прямой вызов runConnection: политика повторов —
+// самая тонкая часть менеджера, а проверить её иначе можно было бы только
+// создавая настоящий TUN, для которого нужен root.
+type connectAttempt func(ctx context.Context) (established bool, err error)
+
+// retryLoop повторяет попытки, пока это имеет смысл.
+func (m *Manager) retryLoop(ctx context.Context, attempt connectAttempt) {
+	everEstablished := false
+	delay := m.reconnectMin
+
+	for n := 1; ; n++ {
+		established, err := attempt(ctx)
+		everEstablished = everEstablished || established
+
+		// Отключили — это не отказ, а выполненная просьба.
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = errors.New("соединение прекратилось без объяснения")
+		}
+
+		// Состоявшееся соединение обнуляет и счётчик, и паузу: следующий
+		// разрыв должен восстанавливаться быстро, а не наследовать минуту
+		// ожидания от прошлого раза.
+		if established {
+			n = 1
+			delay = m.reconnectMin
+		}
+
+		if isFatal(err) || (!everEstablished && n >= initialConnectAttempts) {
+			m.setError(err)
+			return
+		}
+
+		m.setReconnecting(err, n+1)
+		log.Printf("Соединение потеряно (%v). Следующая попытка через %s", err, delay)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+
+		delay = min(delay*2, m.reconnectMax)
+	}
+}
+
+// runConnection поднимает туннель и держит его, пока он жив. Возвращает
+// признак того, что рукопожатие состоялось, и причину, по которой всё
+// закончилось.
 //
 // Ядро amneziawg-go работает внутри этого процесса: TUN создаётся напрямую,
 // устройство настраивается вызовом IpcSet. Отдельного бинарника, unix-сокета
 // и разбора чужого лога больше нет — вместе с ними ушли и их отказы
 // (протухший сокет, «интерфейс занят», гонка при старте).
-func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) {
-	defer m.cleanup()
+//
+// Устройство создаётся заново на каждую попытку, а не переиспользуется:
+// сокет ядра привязан к маршруту, который был при его создании, и после
+// смены сети (Wi-Fi на кабель, новая точка доступа) продолжает слать пакеты
+// в исчезнувший путь.
+func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) (bool, error) {
+	// Уборка на любом пути выхода: маршруты, посредник имён, системный DNS и
+	// само устройство. Держать их до следующей попытки нельзя — интерфейс
+	// исчезает вместе с устройством, и маршруты на него ведут в пустоту.
+	defer m.releaseSystem()
 
 	mtu := cfg.Interface.MTU
 	if mtu <= 0 {
@@ -241,8 +370,7 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 
 	tunDev, err := tun.CreateTUN(ifname, mtu)
 	if err != nil {
-		m.setError(fmt.Errorf("не удалось создать интерфейс %s: %w", ifname, err))
-		return
+		return false, fmt.Errorf("не удалось создать интерфейс %s: %w", ifname, err)
 	}
 
 	// Ядро может выдать имя, отличное от запрошенного. Дальше по коду ходит
@@ -262,40 +390,27 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 
 	// Тот же самый текст UAPI, что раньше уходил в сокет.
 	if err := dev.IpcSet(m.buildUAPIConfig(cfg)); err != nil {
-		m.setError(fmt.Errorf("ядро отвергло конфигурацию: %w", err))
-		dev.Close()
-		return
+		// Повторять нечего: ядро отвергает не сеть, а сами параметры.
+		return false, fatalError{fmt.Errorf("ядро отвергло конфигурацию: %w", err)}
 	}
 
 	if err := dev.Up(); err != nil {
-		m.setError(fmt.Errorf("не удалось поднять туннель: %w", err))
-		dev.Close()
-		return
+		return false, fmt.Errorf("не удалось поднять туннель: %w", err)
 	}
 
 	if err := m.configureLink(cfg); err != nil {
-		m.setError(fmt.Errorf("не удалось настроить интерфейс: %w", err))
-		dev.Close()
-		return
+		return false, fmt.Errorf("не удалось настроить интерфейс: %w", err)
 	}
 
 	// Состояние остаётся «подключение», пока не состоялось рукопожатие:
 	// поднятый интерфейс сам по себе ещё ничего не значит. Маршруты тоже
 	// ставятся только после него.
-	watching := make(chan struct{})
-	go func() {
-		defer close(watching)
-		m.watchDevice(ctx, dev, cfg, routing)
-	}()
-
-	<-dev.Wait()
-
-	// Наблюдатель обязан завершиться ДО уборки (она в defer выше). Он ставит
-	// маршруты и подменяет системный DNS, и закрытие устройства его не
-	// останавливает мгновенно: успей он сделать это после уборки — записи
-	// остались бы в системе до перезагрузки, уводя трафик в исчезнувший
-	// интерфейс.
-	<-watching
+	//
+	// Наблюдатель обязан завершиться ДО уборки. Он ставит маршруты и
+	// подменяет системный DNS, и закрытие устройства не останавливает его
+	// мгновенно: успей он сделать это после уборки — записи остались бы в
+	// системе, уводя трафик в исчезнувший интерфейс.
+	return m.watchDevice(ctx, dev, cfg, routing)
 }
 
 // deviceLogger направляет журнал ядра в общий лог приложения. Штатный
@@ -328,8 +443,10 @@ const (
 )
 
 // watchDevice ведёт соединение от поднятого интерфейса до рабочего туннеля:
-// ждёт рукопожатия, включает маршрутизацию и дальше обновляет счётчики.
-func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) {
+// ждёт рукопожатия, включает маршрутизацию, а дальше следит, что туннель жив.
+//
+// Возвращает признак состоявшегося рукопожатия и причину завершения.
+func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) (bool, error) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -343,25 +460,23 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 	waitsForTraffic := !hasKeepalive(cfg)
 
 	// Маршруты ставим один раз, дальше только следим.
-	bringUpTraffic := func() bool {
+	bringUpTraffic := func() error {
 		if routesUp {
-			return true
+			return nil
 		}
 		if err := m.configureTraffic(cfg, routing); err != nil {
-			m.setError(fmt.Errorf("не удалось настроить маршрутизацию: %w", err))
-			dev.Close()
-			return false
+			return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
 		}
 		routesUp = true
-		return true
+		return nil
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return established, nil
 		case <-dev.Wait():
-			return
+			return established, errors.New("ядро закрыло туннель")
 		case <-ticker.C:
 		}
 
@@ -370,34 +485,52 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 			continue
 		}
 		stats := parseDeviceStats(state)
-		waited := time.Since(started)
 
 		if !established {
 			if stats.LastHandshake.IsZero() {
+				waited := time.Since(started)
+
 				// Маршруты до рукопожатия ставим только ради пиров, которым
 				// без трафика не с чего начать.
-				if waitsForTraffic && waited >= graceWithoutRoutes && !bringUpTraffic() {
-					return
+				if waitsForTraffic && waited >= graceWithoutRoutes {
+					if err := bringUpTraffic(); err != nil {
+						return false, err
+					}
 				}
 				if waited >= handshakeTimeout {
-					m.setError(fmt.Errorf("сервер не отвечает: рукопожатие не состоялось за %s. Проверьте конфигурацию — возможно, ключ больше не действителен", handshakeTimeout))
-					dev.Close()
-					return
+					return false, fmt.Errorf("сервер не отвечает: рукопожатие не состоялось за %s. Проверьте конфигурацию — возможно, ключ больше не действителен", handshakeTimeout)
 				}
 				continue
 			}
 
 			// Рукопожатие есть — вот теперь соединение действительно живо.
-			if !bringUpTraffic() {
-				return
+			if err := bringUpTraffic(); err != nil {
+				return false, err
 			}
 
 			established = true
 			now := time.Now()
+
 			m.mu.Lock()
 			m.status.State = StateConnected
 			m.status.ConnectedAt = &now
+			// Причина прошлого разрыва больше не актуальна.
+			m.status.Error = ""
+			m.status.Attempt = 0
 			m.mu.Unlock()
+
+			// Смену состояния шлём немедленно, не дожидаясь очередного среза
+			// счётчиков: пользователь ждёт именно её.
+			lastNotify = time.Now()
+			m.notifyStatusChange()
+		}
+
+		// Живой пир не молчит дольше deadPeerTimeout: ядро пересогласовывает
+		// ключи само. Молчание сверх этого срока — разрыв, и признать его
+		// нужно самим. Раньше здесь не было ничего: пропавший сервер оставлял
+		// состояние «Подключено» навсегда, а трафик уходил в мёртвый туннель.
+		if silence := time.Since(stats.LastHandshake); silence > deadPeerTimeout {
+			return true, fmt.Errorf("сервер молчит %s", silence.Round(time.Second))
 		}
 
 		m.mu.Lock()
@@ -1021,73 +1154,81 @@ func (m *Manager) Disconnect() error {
 }
 
 // teardown разбирает текущее соединение и возвращается только когда всё
-// действительно закончилось: устройство закрыто, горутина соединения вышла,
-// маршруты сняты. Вызывать под connectMu.
+// действительно закончилось: супервизор вышел, устройство закрыто, маршруты
+// сняты и системный DNS возвращён. Вызывать под connectMu.
 func (m *Manager) teardown() {
 	m.mu.Lock()
 	if m.status.State == StateDisconnected {
 		m.mu.Unlock()
 		return
 	}
-	done := m.done
+	cancel, done := m.cancel, m.done
 	m.status.State = StateDisconnecting
 	m.mu.Unlock()
 
 	m.notifyStatusChange()
-	m.closeDevice()
 
-	// Ждём выхода горутины соединения: её отложенная уборка обязана
-	// отработать до того, как поверх начнут поднимать новый туннель.
+	// Отмена контекста доводит до конца всю цепочку: наблюдатель выходит из
+	// цикла, попытка подключения освобождает систему, супервизор перестаёт
+	// переподключаться.
+	if cancel != nil {
+		cancel()
+	}
 	if done != nil {
 		<-done
 	}
 
-	// Уборку зовём ещё раз намеренно, хотя горутина соединения свою уже
-	// сделала. Она сохраняет состояние ошибки — чтобы причина осталась на
-	// экране, а не сменилась безмолвным «Отключено». Здесь же отключение
-	// запрошено явно, и состояние обязано стать «Отключено»: без этого
-	// повторный вызов сюда навсегда упирался бы в StateError.
-	m.cleanup()
-}
-
-// closeDevice останавливает туннель. Закрытие устройства закрывает и TUN,
-// а вместе с ним из системы исчезает сам интерфейс — отдельно удалять его
-// командой больше не нужно.
-func (m *Manager) closeDevice() {
+	// Состояние ошибки от прошлой попытки супервизор оставляет намеренно —
+	// чтобы причина не пропала с экрана. Здесь же отключение запрошено явно,
+	// и итог у него один: «Отключено».
 	m.mu.Lock()
-	cancel, dev := m.cancel, m.dev
-	m.dev = nil
+	m.status = ConnectionStatus{State: StateDisconnected}
+	m.activeConfig = nil
+	m.routingConfig = nil
+	m.cancel, m.done = nil, nil
 	m.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
-	if dev != nil {
-		dev.Close()
-	}
+	m.notifyStatusChange()
 }
 
-// cleanup cleans up after disconnection
-func (m *Manager) cleanup() {
-	// Всё, что трогает таблицу маршрутизации, — под одной блокировкой:
-	// иначе пересборка правил из интерфейса могла бы вклиниться в уборку и
+// releaseSystem возвращает системе всё, что мы в ней меняли, и закрывает
+// устройство. Вызывается в конце КАЖДОЙ попытки подключения, а не только при
+// отключении: между попытками интерфейс пересоздаётся, и маршруты на прежний
+// вели бы в пустоту.
+func (m *Manager) releaseSystem() {
+	// Всё, что трогает таблицу маршрутизации, — под одной блокировкой: иначе
+	// пересборка правил из интерфейса могла бы вклиниться в уборку и
 	// поставить маршруты на уже разбираемый туннель.
 	m.routeMu.Lock()
 	// Посредник DNS останавливается первым: он ставит маршруты сам, и его
 	// последний ответ не должен обогнать уборку.
 	m.stopNameRouting()
 	// Записи "via <шлюз>" висят на физическом интерфейсе и удалением awg0 не
-	// убираются — без этого они копились бы после каждого отключения.
+	// убираются — без этого они копились бы после каждой попытки.
 	m.flushRoutes()
 	m.routeMu.Unlock()
 
-	// Интерфейс удалять не нужно: TUN закрывается вместе с устройством и
-	// исчезает из системы сам. Осталось вернуть DNS.
 	m.dns.Restore()
 
+	// Интерфейс удалять не нужно: TUN закрывается вместе с устройством и
+	// исчезает из системы сам.
 	m.mu.Lock()
-	// Состояние ошибки сохраняем: раньше cleanup затирал его на
-	// StateDisconnected, и в интерфейсе было просто "Отключено" без причины.
+	dev := m.dev
+	m.dev = nil
+	m.mu.Unlock()
+
+	if dev != nil {
+		dev.Close()
+	}
+}
+
+// finish переводит менеджер в покой после выхода супервизора.
+//
+// Состояние ошибки сохраняется: раньше уборка затирала его на «Отключено», и
+// в интерфейсе оставалось одно слово без причины. Сбрасывает его либо новое
+// подключение, либо явное отключение.
+func (m *Manager) finish() {
+	m.mu.Lock()
 	prevState, prevErr := m.status.State, m.status.Error
 
 	m.status = ConnectionStatus{State: StateDisconnected}
@@ -1103,6 +1244,20 @@ func (m *Manager) cleanup() {
 	m.notifyStatusChange()
 }
 
+// setReconnecting отмечает потерю связи и начало новой попытки. Причина
+// остаётся в статусе: без неё на экране «Переподключение» без объяснения,
+// почему связь вообще пропала.
+func (m *Manager) setReconnecting(cause error, attempt int) {
+	m.mu.Lock()
+	m.status.State = StateReconnecting
+	m.status.Error = cause.Error()
+	m.status.Attempt = attempt
+	m.status.ConnectedAt = nil
+	m.mu.Unlock()
+
+	m.notifyStatusChange()
+}
+
 // setError sets an error state
 func (m *Manager) setError(err error) {
 	log.Printf("VPN error: %v", err)
@@ -1110,6 +1265,7 @@ func (m *Manager) setError(err error) {
 	m.mu.Lock()
 	m.status.State = StateError
 	m.status.Error = err.Error()
+	m.status.Attempt = 0
 	m.mu.Unlock()
 
 	m.notifyStatusChange()

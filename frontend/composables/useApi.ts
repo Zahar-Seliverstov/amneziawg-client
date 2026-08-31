@@ -28,12 +28,18 @@ export interface AmneziaConfig {
 }
 
 export interface ConnectionStatus {
-  state: 'disconnected' | 'connecting' | 'connected' | 'disconnecting' | 'error'
+  // reconnecting — туннель был поднят и оборвался, идёт восстановление.
+  // Отдельное состояние, а не 'connecting': пользователь должен видеть, что
+  // связь потеряна, а не что он сам только что нажал кнопку.
+  state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'disconnecting' | 'error'
   config_id?: string
   config_name?: string
   connected_at?: string
   error?: string
   interface?: string
+  // attempt — номер идущей попытки подключения; отсутствует, когда соединение
+  // установлено или его нет вовсе.
+  attempt?: number
   bytes_received: number
   bytes_sent: number
   last_handshake?: string

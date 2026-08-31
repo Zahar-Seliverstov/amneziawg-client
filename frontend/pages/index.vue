@@ -360,8 +360,14 @@ const selectedConfigId = ref<string | null>(null)
 let storedConfigId = ''
 
 const isConnected = computed(() => wsStatus.value?.state === 'connected')
-const isBusy = computed(
-  () => wsStatus.value?.state === 'connecting' || wsStatus.value?.state === 'disconnecting'
+const isConnecting = computed(() => wsStatus.value?.state === 'connecting')
+const isReconnecting = computed(() => wsStatus.value?.state === 'reconnecting')
+
+// Соединение «живёт»: либо установлено, либо клиент его сейчас поднимает.
+// Кнопка в этом состоянии отключает, а выбор другой конфигурации переключает
+// туннель, а не начинает подключение с нуля.
+const isLive = computed(
+  () => isConnected.value || isConnecting.value || isReconnecting.value
 )
 
 const selectedConfig = computed(
@@ -396,33 +402,44 @@ const pingClass = computed(() => {
 const powerState = computed(() => {
   const s = wsStatus.value?.state
   if (s === 'connected') return 'on'
-  if (s === 'connecting' || s === 'disconnecting') return 'busy'
+  if (s === 'connecting' || s === 'disconnecting' || s === 'reconnecting') return 'busy'
   if (s === 'error') return 'error'
   return 'off'
 })
-
-const isConnecting = computed(() => wsStatus.value?.state === 'connecting')
 
 // Подключение можно прервать: ожидание рукопожатия длится до 45 секунд, и
 // всё это время кнопка была заблокирована. Не даём жать только во время
 // отключения — там уже идёт разбор соединения, и второй запрос ни к чему.
 const canToggle = computed(() => {
   if (wsStatus.value?.state === 'disconnecting') return false
-  if (isConnected.value || isConnecting.value) return true
+  if (isLive.value) return true
   return Boolean(selectedConfigId.value)
 })
 
-// Текст ошибки показываем, пока состояние действительно ошибочное:
-// при новой попытке подключения он должен исчезать сам.
+// Причину показываем и при отказе, и при потере связи. Второе особенно важно:
+// без объяснения «Переподключение» выглядит как зависшая кнопка.
 const connectionError = computed(() => {
-  if (wsStatus.value?.state !== 'error') return null
-  return wsStatus.value?.error || 'Не удалось подключиться. Подробности — в системном журнале'
+  const s = wsStatus.value
+  if (!s) return null
+
+  if (s.state === 'error') {
+    return s.error || 'Не удалось подключиться. Подробности — в системном журнале'
+  }
+
+  if (s.state === 'reconnecting') {
+    const reason = s.error || 'сервер не отвечает'
+    const attempt = s.attempt ? `, попытка ${s.attempt}` : ''
+    return `Связь потеряна: ${reason}${attempt}`
+  }
+
+  return null
 })
 
 const statusText = computed(() => {
   switch (wsStatus.value?.state) {
     case 'connected': return 'Подключено'
     case 'connecting': return 'Подключение'
+    case 'reconnecting': return 'Переподключение'
     case 'disconnecting': return 'Отключение'
     case 'error': return 'Ошибка'
     default: return 'Отключено'
@@ -600,7 +617,7 @@ async function selectConfig(id: string) {
   // Бэкенд сам разбирает текущий и поднимает новый, поэтому отдельного
   // «отключить» здесь нет — иначе между двумя запросами возникала бы щель,
   // в которой маршруты успевали слететь.
-  if (isConnected.value || isConnecting.value) {
+  if (isLive.value) {
     try {
       await api.connect(id)
     } catch (e: any) {
@@ -627,7 +644,7 @@ async function togglePower() {
   if (!canToggle.value) return
 
   try {
-    if (isConnected.value || isConnecting.value) {
+    if (isLive.value) {
       await api.disconnect()
     } else if (selectedConfigId.value) {
       await api.connect(selectedConfigId.value)

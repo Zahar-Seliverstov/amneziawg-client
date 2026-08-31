@@ -45,6 +45,13 @@ impl Snapshot {
         self.state == "connected"
     }
 
+    /// Соединение «живёт»: установлено либо восстанавливается. Отключить его
+    /// нужно уметь в обоих случаях — иначе бесконечное переподключение из
+    /// трея не прервать.
+    fn live(&self) -> bool {
+        matches!(self.state.as_str(), "connected" | "connecting" | "reconnecting")
+    }
+
     fn tooltip(&self) -> String {
         if !self.online {
             return "AWG Client — служба не запущена".into();
@@ -56,6 +63,7 @@ impl Snapshot {
                 None => "AWG Client — подключено".into(),
             },
             "connecting" => "AWG Client — подключение…".into(),
+            "reconnecting" => "AWG Client — связь потеряна, восстанавливаю…".into(),
             "disconnecting" => "AWG Client — отключение…".into(),
             "error" => "AWG Client — ошибка подключения".into(),
             _ => "AWG Client — отключено".into(),
@@ -98,7 +106,7 @@ impl<R: Runtime> ksni::Tray for Tray<R> {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let connected = self.snapshot.connected();
+        let live = self.snapshot.live();
 
         let configs: Vec<MenuItem<Self>> = self
             .snapshot
@@ -125,14 +133,14 @@ impl<R: Runtime> ksni::Tray for Tray<R> {
         vec![
             SubMenu {
                 label: "Подключить".into(),
-                enabled: !connected && !configs.is_empty(),
+                enabled: !live && !configs.is_empty(),
                 submenu: configs,
                 ..Default::default()
             }
             .into(),
             StandardItem {
                 label: "Отключить".into(),
-                enabled: connected,
+                enabled: live,
                 activate: Box::new(|_: &mut Self| {
                     thread::spawn(|| {
                         let _ = api::disconnect();
