@@ -2,6 +2,13 @@
 // системным резолвером и сервером имён туннеля и сообщает наблюдателю,
 // какие адреса вернулись для каждого запрошенного имени.
 //
+// Обслуживаются оба транспорта, UDP и TCP. TCP — не роскошь: когда ответ не
+// помещается в датаграмму, сервер ставит в нём флаг усечения, и резолвер по
+// правилам повторяет тот же вопрос по TCP. Пока посредник слушал только UDP,
+// повтор упирался в закрытый порт, и имя не разрешалось вовсе. Бьёт это
+// ровно по именам с длинными ответами — то есть по CDN, ради которых правила
+// по доменам и заводились.
+//
 // Это нужно маршрутизации по доменам и зонам. Адрес сайта заранее не известен
 // и меняется со временем (CDN отдаёт разные адреса разным клиентам и в разные
 // минуты), поэтому единственный достоверный момент, когда его можно узнать, —
@@ -58,7 +65,7 @@ const (
 	maxTTL = 6 * time.Hour
 )
 
-// Proxy — DNS-посредник поверх UDP.
+// Proxy — DNS-посредник поверх UDP и TCP.
 //
 // Нулевое значение непригодно, используйте New.
 type Proxy struct {
@@ -67,6 +74,7 @@ type Proxy struct {
 	mu       sync.Mutex
 	started  bool
 	conn     *net.UDPConn
+	listener *net.TCPListener
 	upstream []netip.AddrPort
 
 	wg   sync.WaitGroup
@@ -100,23 +108,90 @@ func (p *Proxy) Start(listen netip.AddrPort, upstream []netip.AddrPort) error {
 	p.started = true
 	p.mu.Unlock()
 
-	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(listen))
-	if err != nil {
+	fail := func(err error) error {
 		p.mu.Lock()
 		p.started = false
 		p.mu.Unlock()
-		return fmt.Errorf("dnsproxy: не удалось занять %s: %w", listen, err)
+		return err
+	}
+
+	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(listen))
+	if err != nil {
+		return fail(fmt.Errorf("dnsproxy: не удалось занять %s по UDP: %w", listen, err))
+	}
+
+	// TCP занимаем на ТОМ ЖЕ адресе и порту, что достался UDP. Резолвер,
+	// получив усечённый ответ, повторяет вопрос по TCP ровно туда же, куда
+	// задавал его по UDP, — разъехавшиеся порты означали бы, что повторить
+	// вопрос некуда. При запрошенном нулевом порте номер выбирает ядро, и
+	// узнать его можно только у открытого сокета.
+	actual := conn.LocalAddr().(*net.UDPAddr).AddrPort()
+
+	// TCP обязателен, а не желателен. Посредник без него отвечал бы на
+	// обычные запросы и молча терял те, что не поместились в датаграмму:
+	// резолвер повторяет их по TCP, и повтор упирался бы в закрытый порт.
+	// Лучше не подниматься вовсе — вызывающий тогда настроит DNS напрямую,
+	// и разрешение имён останется исправным целиком.
+	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(actual))
+	if err != nil {
+		conn.Close()
+		return fail(fmt.Errorf("dnsproxy: не удалось занять %s по TCP: %w", actual, err))
 	}
 
 	p.mu.Lock()
 	p.conn = conn
+	p.listener = listener
 	p.upstream = append([]netip.AddrPort(nil), upstream...)
 	p.mu.Unlock()
 
-	p.wg.Add(1)
-	go p.serve(conn)
+	p.wg.Add(2)
+	go p.serveUDP(conn)
+	go p.serveTCP(listener)
 
 	return nil
+}
+
+// servers возвращает список вышестоящих серверов.
+func (p *Proxy) servers() []netip.AddrPort {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.upstream
+}
+
+// stopped сообщает, что посредника остановили штатно.
+func (p *Proxy) stopped() bool {
+	select {
+	case <-p.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// observeAnswer разбирает ответ и сообщает наблюдателю. Общая часть для обоих
+// транспортов: правило по имени должно срабатывать одинаково независимо от
+// того, каким путём пришёл ответ.
+func (p *Proxy) observeAnswer(response []byte) {
+	if p.observe == nil {
+		return
+	}
+	if answer, ok := parseAnswer(response); ok {
+		p.observe(answer)
+	}
+}
+
+// guard ограждает обработку одного запроса.
+//
+// Разбор чужих данных не должен ронять весь backend: сообщение приходит из
+// сети, и на кривом ответе паника вероятнее, чем где-либо ещё.
+func (p *Proxy) guard(handle func()) {
+	defer p.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("dnsproxy: паника при обработке запроса: %v", r)
+		}
+	}()
+	handle()
 }
 
 // Addr возвращает адрес, на котором посредник фактически слушает. Пригодится,
@@ -139,30 +214,31 @@ func (p *Proxy) Stop() {
 		close(p.stop)
 
 		p.mu.Lock()
-		conn := p.conn
-		p.conn = nil
+		conn, listener := p.conn, p.listener
+		p.conn, p.listener = nil, nil
 		p.mu.Unlock()
 
 		if conn != nil {
 			conn.Close()
+		}
+		if listener != nil {
+			listener.Close()
 		}
 	})
 
 	p.wg.Wait()
 }
 
-// serve читает запросы до закрытия сокета.
-func (p *Proxy) serve(conn *net.UDPConn) {
+// serveUDP читает запросы до закрытия сокета.
+func (p *Proxy) serveUDP(conn *net.UDPConn) {
 	defer p.wg.Done()
 
 	buf := make([]byte, maxMessage)
 	for {
 		n, client, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			select {
-			case <-p.stop:
+			if p.stopped() {
 				return // штатное закрытие
-			default:
 			}
 			// Временную ошибку чтения пережидаем: закрытый сокет нас уже
 			// вернул выше, а всё остальное лечится следующей итерацией.
@@ -177,28 +253,17 @@ func (p *Proxy) serve(conn *net.UDPConn) {
 		copy(query, buf[:n])
 
 		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
-			// Разбор чужих данных не должен ронять весь backend: ответ
-			// приходит из сети, и на кривом сообщении паника вероятнее,
-			// чем где-либо ещё.
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("dnsproxy: паника при обработке запроса: %v", r)
-				}
-			}()
-			p.handle(conn, query, client)
-		}()
+		go p.guard(func() { p.handleUDP(conn, query, client) })
 	}
 }
 
-// handle пересылает один запрос и возвращает ответ клиенту.
-func (p *Proxy) handle(conn *net.UDPConn, query []byte, client *net.UDPAddr) {
-	p.mu.Lock()
-	upstream := p.upstream
-	p.mu.Unlock()
-
-	response, err := exchange(upstream, query)
+// handleUDP пересылает один запрос и возвращает ответ клиенту.
+//
+// Ответ отдаётся как есть, включая флаг усечения: решать, повторять ли вопрос
+// по TCP, — дело резолвера, и подменять его решение нельзя. Раньше это было
+// тупиком, теперь повтор придёт на наш же TCP-сокет.
+func (p *Proxy) handleUDP(conn *net.UDPConn, query []byte, client *net.UDPAddr) {
+	response, err := exchangeUDP(p.servers(), query)
 	if err != nil {
 		log.Printf("dnsproxy: запрос не обслужен: %v", err)
 		if refusal, ok := servfail(query); ok {
@@ -213,16 +278,11 @@ func (p *Proxy) handle(conn *net.UDPConn, query []byte, client *net.UDPAddr) {
 		log.Printf("dnsproxy: не удалось ответить клиенту: %v", err)
 	}
 
-	if p.observe == nil {
-		return
-	}
-	if answer, ok := parseAnswer(response); ok {
-		p.observe(answer)
-	}
+	p.observeAnswer(response)
 }
 
-// exchange пересылает запрос серверам по очереди и возвращает первый ответ.
-func exchange(upstream []netip.AddrPort, query []byte) ([]byte, error) {
+// exchangeUDP пересылает запрос серверам по очереди и возвращает первый ответ.
+func exchangeUDP(upstream []netip.AddrPort, query []byte) ([]byte, error) {
 	var lastErr error
 
 	for _, server := range upstream {

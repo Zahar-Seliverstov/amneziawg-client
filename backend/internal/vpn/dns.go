@@ -32,6 +32,12 @@ const (
 
 	resolvHeader = "# Создано awg-client на время VPN-соединения.\n" +
 		"# Прежний файл сохранён как " + resolvBackupPath + " и вернётся при отключении.\n"
+
+	// resolvOptions включает EDNS0: без него сервер обязан уместить ответ в
+	// 512 байт и всё, что длиннее, помечает как усечённое. Резолвер тогда
+	// повторяет вопрос по TCP — это работает, но стоит лишнего оборота на
+	// каждое имя с длинным ответом, то есть на каждый CDN.
+	resolvOptions = "options edns0\n"
 )
 
 // dnsMethod — каким способом список серверов был подменён. Хранится, чтобы
@@ -117,14 +123,9 @@ func applyViaResolvconf(ifname string, servers []string) error {
 		return err
 	}
 
-	var sb strings.Builder
-	for _, server := range servers {
-		fmt.Fprintf(&sb, "nameserver %s\n", server)
-	}
-
 	// Ошибку записи не возвращаем сразу: процесс уже запущен, и выйти, не
 	// дождавшись его, значит оставить зомби.
-	_, writeErr := io.WriteString(stdin, sb.String())
+	_, writeErr := io.WriteString(stdin, nameserverLines(servers)+resolvOptions)
 	stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
@@ -143,13 +144,21 @@ func applyViaFile(servers []string) error {
 		}
 	}
 
+	return writeSystemFileAtomic(resolvConfPath, []byte(resolvContent(servers)), 0644)
+}
+
+// nameserverLines собирает строки со списком серверов имён.
+func nameserverLines(servers []string) string {
 	var sb strings.Builder
-	sb.WriteString(resolvHeader)
 	for _, server := range servers {
 		fmt.Fprintf(&sb, "nameserver %s\n", server)
 	}
+	return sb.String()
+}
 
-	return writeSystemFileAtomic(resolvConfPath, []byte(sb.String()), 0644)
+// resolvContent собирает содержимое /etc/resolv.conf целиком.
+func resolvContent(servers []string) string {
+	return resolvHeader + nameserverLines(servers) + resolvOptions
 }
 
 // restoreResolvConf возвращает сохранённый файл на место.
