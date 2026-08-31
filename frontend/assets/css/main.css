@@ -70,6 +70,21 @@ body {
   margin-bottom: 4px;
 }
 
+.topbar__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar__logo {
+  display: block;
+  width: 22px;
+  height: 22px;
+  background-color: currentColor;
+  -webkit-mask: url('/logo-mono.svg') no-repeat center / contain;
+  mask: url('/logo-mono.svg') no-repeat center / contain;
+}
+
 .topbar h1 {
   font-size: 18px;
   font-weight: 600;

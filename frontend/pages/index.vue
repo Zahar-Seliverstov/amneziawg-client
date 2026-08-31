@@ -1,7 +1,10 @@
 <template>
   <div class="app">
     <header class="topbar">
-      <h1>AWG Client</h1>
+      <span class="topbar__brand">
+        <span class="topbar__logo" aria-hidden="true"></span>
+        <h1>AWG Client</h1>
+      </span>
       <button class="icon-btn topbar__settings" title="Настройки" @click="$router.push('/settings')">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3" />
