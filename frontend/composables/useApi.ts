@@ -77,33 +77,24 @@ export interface PingResult {
 }
 
 export function useApi() {
-  const config = useRuntimeConfig()
-  
-  // Используем тот же хост, с которого открыта страница, но порт backend
-  const getApiBase = () => {
-    if (import.meta.client) {
-      const host = window.location.hostname
-      return `http://${host}:8081/api`
-    }
-    return config.public.apiBase
-  }
-  
   async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const apiBase = getApiBase()
-    const res = await fetch(`${apiBase}${path}`, {
+    const res = await fetch(useApiUrl(path), {
       ...options,
       headers: {
         'Content-Type': 'application/json',
         ...options.headers
       }
     })
-    
-    const data = await res.json()
-    
+
+    // Ответ без тела (или с телом не в JSON) — тоже ответ: разбирать его
+    // вслепую значило бы превратить понятную ошибку сервера в невнятное
+    // «Unexpected token» из парсера.
+    const data = await res.json().catch(() => null)
+
     if (!res.ok) {
-      throw new Error(data.error || 'API Error')
+      throw new Error(data?.error || `Ошибка ${res.status}`)
     }
-    
+
     return data as T
   }
   
@@ -216,9 +207,18 @@ export function useApi() {
   async function ping(): Promise<PingResult> {
     return fetchApi<PingResult>('/ping')
   }
+
+  // Версию показывает backend: она подставляется ему на сборке из манифеста
+  // Tauri. Своей копии числа у интерфейса нет намеренно — вписанное руками
+  // «1.0.0» пережило выпуск 1.1.0 и врало пользователю.
+  async function getVersion(): Promise<string> {
+    const res = await fetchApi<{ version: string }>('/version')
+    return res.version || ''
+  }
   
   return {
     ping,
+    getVersion,
     getConfigs,
     addConfig,
     updateConfig,

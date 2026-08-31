@@ -77,46 +77,6 @@
         </label>
       </div>
 
-      <!-- Тема оформления -->
-      <div class="setting-group">
-        <div class="setting-group__header">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="5" />
-            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-          </svg>
-          <span>Тема оформления</span>
-          <span class="setting-badge">Скоро</span>
-        </div>
-        <div class="setting-row setting-row--disabled">
-          <span class="setting-row__label">Внешний вид</span>
-          <SelectMenu
-            v-model="themeValue"
-            :options="themeOptions"
-            class="setting-row__control"
-          />
-        </div>
-      </div>
-
-      <!-- Язык -->
-      <div class="setting-group">
-        <div class="setting-group__header">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-          </svg>
-          <span>Язык</span>
-          <span class="setting-badge">Скоро</span>
-        </div>
-        <div class="setting-row setting-row--disabled">
-          <span class="setting-row__label">Язык интерфейса</span>
-          <SelectMenu
-            v-model="languageValue"
-            :options="languageOptions"
-            class="setting-row__control"
-          />
-        </div>
-      </div>
-
       <!-- Информация о приложении -->
       <div class="setting-group">
         <div class="setting-group__header">
@@ -128,7 +88,7 @@
         </div>
         <div class="setting-row">
           <span class="setting-row__label">Версия</span>
-          <span class="setting-row__value">1.0.0</span>
+          <span class="setting-row__value">{{ version || '—' }}</span>
         </div>
       </div>
     </section>
@@ -162,20 +122,9 @@ const autostart = ref<AutostartState>({ enabled: false, available: false })
 const saving = ref(false)
 const savingAutostart = ref(false)
 
-// Placeholder values for disabled settings
-const themeValue = ref('dark')
-const languageValue = ref('ru')
-
-const themeOptions = [
-  { value: 'dark', label: 'Тёмная' },
-  { value: 'light', label: 'Светлая' },
-  { value: 'system', label: 'Как в системе' }
-]
-
-const languageOptions = [
-  { value: 'ru', label: 'Русский' },
-  { value: 'en', label: 'English' }
-]
+// Версия приходит от backend'а: единственный источник — манифест Tauri,
+// откуда её подставляют на сборке.
+const version = ref('')
 
 const selectedConfigLabel = computed(() => {
   if (selectedConfigName.value === null) return '—'
@@ -218,12 +167,17 @@ async function saveAutostart() {
 // backend старее интерфейса) не должен обнулять остальные — иначе страница
 // врёт, что автоподключение выключено, а конфигурация не выбрана.
 onMounted(async () => {
-  const [cfgsRes, settingsRes, selectedRes, autostartRes] = await Promise.allSettled([
+  const [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes] = await Promise.allSettled([
     api.getConfigs(),
     api.getSettings(),
     api.getSelectedConfig(),
-    api.getAutostart()
+    api.getAutostart(),
+    api.getVersion()
   ])
+
+  if (versionRes.status === 'fulfilled') {
+    version.value = versionRes.value
+  }
 
   if (settingsRes.status === 'fulfilled') {
     settings.value = settingsRes.value
@@ -243,7 +197,7 @@ onMounted(async () => {
     }
   }
 
-  for (const res of [cfgsRes, settingsRes, selectedRes, autostartRes]) {
+  for (const res of [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes]) {
     if (res.status === 'rejected') console.error('Ошибка загрузки настроек:', res.reason)
   }
 })

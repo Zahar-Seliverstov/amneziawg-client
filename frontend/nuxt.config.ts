@@ -12,10 +12,12 @@ export default defineNuxtConfig({
     appManifest: false
   },
   
+  // Адрес backend'а нужен только в разработке: собранный интерфейс раздаёт
+  // сам backend, и там его адрес совпадает с адресом страницы (см.
+  // composables/useBackend.ts). Переопределяется через NUXT_PUBLIC_BACKEND_ORIGIN.
   runtimeConfig: {
     public: {
-      apiBase: 'http://127.0.0.1:8081/api',
-      wsBase: 'ws://127.0.0.1:8081/api/ws'
+      backendOrigin: 'http://127.0.0.1:8081'
     }
   },
   
@@ -25,6 +27,9 @@ export default defineNuxtConfig({
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' }
+      ],
+      link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }
       ]
     }
   },
