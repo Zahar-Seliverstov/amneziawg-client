@@ -1,0 +1,67 @@
+name: Проверки
+
+# Гоняем на каждый push и pull request: тесты в проекте есть, но до сих пор
+# не запускались нигде, кроме как руками.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # Только свой код: в backend/.cache лежит кеш модулей (в git не входит,
+      # но у разработчика на машине есть), и чужое форматирование не наша забота.
+      - name: Форматирование
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt не применён к файлам:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      # -short пропускает тесты, которым нужен интернет: в CI они дали бы
+      # мигающие отказы по причинам, не связанным с кодом.
+      - name: Тесты с детектором гонок
+        working-directory: backend
+        run: go test -short -race ./...
+
+  frontend:
+    name: Frontend (Nuxt)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Установка зависимостей
+        working-directory: frontend
+        run: npm ci --no-fund --no-audit
+
+      - name: Сборка
+        working-directory: frontend
+        run: npm run generate
