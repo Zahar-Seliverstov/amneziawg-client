@@ -82,13 +82,12 @@ func ParseAmneziaConfig(name, rawConfig string) (*AmneziaWGConfig, error) {
 		return nil, fmt.Errorf("error scanning config: %w", err)
 	}
 
-	// Validate required fields
-	if cfg.Interface.PrivateKey == "" {
-		return nil, fmt.Errorf("missing required field: PrivateKey")
-	}
-
-	if len(cfg.Peers) == 0 {
-		return nil, fmt.Errorf("no peers defined in configuration")
+	// Проверка целиком, а не пары обязательных полей: всё, что не отсеяно
+	// здесь, всплывёт уже после нажатия «Подключить» — текстом от ядра
+	// туннеля или от команды ip, в системном журнале, которого пользователь
+	// не видит.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	if cfg.Name == "" {

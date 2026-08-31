@@ -288,7 +288,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.RawConfig == "" {
-		jsonError(w, "Config is required", http.StatusBadRequest)
+		jsonError(w, "Вставьте содержимое .conf файла", http.StatusBadRequest)
 		return
 	}
 
@@ -301,7 +301,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	cfg, err := config.ParseAmneziaConfig(req.Name, req.RawConfig)
 	if err != nil {
-		jsonError(w, "Failed to parse config: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, "Не удалось разобрать конфигурацию: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -335,14 +335,14 @@ func (s *Server) handleAddConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.RawConfig == "" {
-		jsonError(w, "Config is required", http.StatusBadRequest)
+		jsonError(w, "Вставьте содержимое .conf файла", http.StatusBadRequest)
 		return
 	}
 
 	// Имя необязательно: парсер выведет его из адреса сервера.
 	cfg, err := config.ParseAmneziaConfig(req.Name, req.RawConfig)
 	if err != nil {
-		jsonError(w, "Failed to parse config: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, "Не удалось разобрать конфигурацию: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

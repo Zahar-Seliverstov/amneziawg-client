@@ -110,6 +110,10 @@ type Manager struct {
 	// dns подменяет системные серверы имён на время соединения.
 	dns dnsControl
 
+	// ipToolErr — почему недоступна команда ip. Ею ставятся адреса и
+	// маршруты, и без неё туннель поднимется, но трафик в него не пойдёт.
+	ipToolErr error
+
 	// Блокировка трафика мимо туннеля. driver — чем блокируем (nil, если в
 	// системе нечем), driverErr — почему нечем, killSwitchOn — настройка
 	// пользователя. Всё под mu; сами вызовы Apply и Clear идут под routeMu
@@ -146,6 +150,14 @@ func NewManager() *Manager {
 		notify:          make(chan ConnectionStatus, statusQueue),
 		reconnectMin:    reconnectMinDelay,
 		reconnectMax:    reconnectMaxDelay,
+	}
+
+	// Адреса и маршруты ставятся командой ip. Без неё туннель поднимется, а
+	// трафик в него не пойдёт — раньше это выражалось серией предупреждений
+	// в журнале при состоянии «Подключено».
+	if _, err := exec.LookPath("ip"); err != nil {
+		m.ipToolErr = fmt.Errorf("не найдена команда ip из пакета iproute2: %w", err)
+		log.Printf("ВНИМАНИЕ: %v. Подключение работать не будет", m.ipToolErr)
 	}
 
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
@@ -383,6 +395,17 @@ func (m *Manager) retryLoop(ctx context.Context, attempt connectAttempt) {
 // смены сети (Wi-Fi на кабель, новая точка доступа) продолжает слать пакеты
 // в исчезнувший путь.
 func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) (bool, error) {
+	// Без iproute2 дальше идти незачем: интерфейс создастся, но ни адреса,
+	// ни маршруты на него не лягут. Повторять нечего — команда в системе не
+	// появится сама.
+	m.mu.RLock()
+	ipErr := m.ipToolErr
+	m.mu.RUnlock()
+
+	if ipErr != nil {
+		return false, fatalError{ipErr}
+	}
+
 	// Уборка на любом пути выхода: маршруты, посредник имён, системный DNS и
 	// само устройство. Держать их до следующей попытки нельзя — интерфейс
 	// исчезает вместе с устройством, и маршруты на него ведут в пустоту.
@@ -649,16 +672,43 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 
 	for _, addr := range cfg.Interface.Address {
 		if err := runCmd("ip", "address", "add", addr, "dev", ifname); err != nil {
-			log.Printf("Warning: failed to add address %s: %v", addr, err)
+			// Отдельный адрес мог не лечь по безобидной причине — например,
+			// он уже назначен. Итог проверяем по состоянию интерфейса ниже.
+			log.Printf("Не удалось назначить адрес %s: %v", addr, err)
 		}
 	}
 
 	// MTU задан при создании TUN, дублировать командой не нужно.
 	if err := runCmd("ip", "link", "set", ifname, "up"); err != nil {
-		return fmt.Errorf("failed to bring interface up: %w", err)
+		return fmt.Errorf("не удалось поднять интерфейс: %w", err)
+	}
+
+	// Интерфейс без единого адреса ничего не отправит. Раньше это проходило
+	// одним предупреждением в журнал: туннель поднимался, состояние
+	// становилось «Подключено», а трафик не шёл — и связи между этим и
+	// строчкой в логе пользователь не видел.
+	//
+	// Спрашиваем систему, а не считаем удачные вызовы: адрес мог быть уже
+	// назначен, и тогда ошибка команды означает успех.
+	if !interfaceHasAddress(ifname) {
+		return fmt.Errorf("интерфейсу %s не назначен ни один адрес — проверьте Address в конфигурации", ifname)
 	}
 
 	return nil
+}
+
+// interfaceHasAddress сообщает, есть ли у интерфейса адрес, пригодный для
+// отправки. Локальные адреса канала (scope link) не в счёт: они появляются
+// сами и ничего не значат.
+func interfaceHasAddress(ifname string) bool {
+	output, err := exec.Command("ip", "-o", "address", "show", "dev", ifname, "scope", "global").Output()
+	if err != nil {
+		// Не смогли спросить — не наказываем: настоящую причину увидим
+		// дальше, когда трафик не пойдёт.
+		log.Printf("Не удалось проверить адреса интерфейса %s: %v", ifname, err)
+		return true
+	}
+	return len(strings.TrimSpace(string(output))) > 0
 }
 
 // configureTraffic перенаправляет трафик в туннель и переключает DNS.
@@ -1046,30 +1096,40 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 
 		host, _, err := net.SplitHostPort(peer.Endpoint)
 		if err != nil || host == "" {
-			log.Printf("Warning: cannot parse endpoint %q: %v", peer.Endpoint, err)
-			continue
-		}
-
-		gateway, err := m.getDefaultGateway()
-		if err != nil {
-			log.Printf("Warning: no default gateway, cannot exclude endpoint: %v", err)
-			continue
+			return fmt.Errorf("не разобрать адрес сервера %q: %w", peer.Endpoint, err)
 		}
 
 		addrs, err := net.LookupIP(host)
 		if err != nil {
-			log.Printf("Warning: cannot resolve endpoint %q: %v", host, err)
-			continue
+			return fmt.Errorf("не удалось определить адрес сервера %q: %w", host, err)
 		}
 
+		// Исключаем адреса ОБЕИХ версий протокола. Раньше IPv6 пропускался
+		// целиком, потому что шлюз спрашивался один раз и только для IPv4:
+		// сервер, доступный лишь по IPv6, не исключался из туннеля, и
+		// зашифрованные пакеты к нему уходили в сам туннель — петля, из-за
+		// которой соединение не поднималось вовсе.
+		excluded := 0
 		for _, addr := range addrs {
-			ip4 := addr.To4()
-			if ip4 == nil {
-				continue // шлюз по умолчанию у нас IPv4
+			prefix := hostPrefix(addr)
+
+			gateway, err := m.gatewayFor(prefix)
+			if err != nil {
+				log.Printf("Адрес сервера %s не исключён: %v", addr, err)
+				continue
 			}
-			if err := m.addRoute(ip4.String()+"/32", "via", gateway); err != nil {
-				log.Printf("Warning: failed to exclude endpoint %s: %v", ip4, err)
+			if err := m.addRoute(prefix, "via", gateway); err != nil {
+				log.Printf("Адрес сервера %s не исключён: %v", addr, err)
+				continue
 			}
+			excluded++
+		}
+
+		// Ни одного исключения — дальше нельзя: маршруты ниже уведут в туннель
+		// и сами пакеты к серверу. Получится петля, и вместо полного туннеля
+		// пользователь останется без сети.
+		if excluded == 0 {
+			return fmt.Errorf("не удалось вывести сервер %s мимо туннеля: без этого весь трафик, включая пакеты к самому серверу, ушёл бы в петлю", host)
 		}
 	}
 
@@ -1098,6 +1158,15 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 	}
 
 	return nil
+}
+
+// hostPrefix превращает адрес в одноадресный префикс: /32 для IPv4 и /128
+// для IPv6 — в таком виде адреса и попадают в таблицу маршрутизации.
+func hostPrefix(ip net.IP) string {
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String() + "/32"
+	}
+	return ip.String() + "/128"
 }
 
 // hasDefaultRoute сообщает, покрывают ли AllowedIPs весь трафик.

@@ -3,9 +3,12 @@ package vpn
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/user/amnezia-web-client/internal/config"
 )
 
 // newTestManager возвращает менеджер с мгновенными паузами: политику повторов
@@ -234,5 +237,41 @@ func TestTeardownClearsErrorState(t *testing.T) {
 
 	if st := m.GetStatus(); st.State != StateDisconnected || st.Error != "" {
 		t.Errorf("после отключения состояние %+v, ожидалось чистое «Отключено»", st)
+	}
+}
+
+// Без iproute2 туннель создастся, но ни адреса, ни маршруты на него не лягут.
+// Повторять нечего: команда в системе сама не появится.
+func TestConnectionFailsFastWithoutIproute2(t *testing.T) {
+	m := newTestManager(t)
+	m.ipToolErr = errors.New("не найдена команда ip")
+
+	cfg := config.AmneziaWGConfig{Peers: []config.PeerConfig{{AllowedIPs: []string{"0.0.0.0/0"}}}}
+
+	established, err := m.runConnection(context.Background(), &cfg, nil)
+
+	if established {
+		t.Error("соединение объявлено состоявшимся")
+	}
+	if err == nil {
+		t.Fatal("отсутствие iproute2 прошло незамеченным")
+	}
+	if !isFatal(err) {
+		t.Error("отказ признан временным — клиент будет повторять его вечно")
+	}
+}
+
+// Адреса обеих версий протокола попадают в таблицу маршрутизации в виде
+// одноадресных префиксов.
+func TestHostPrefix(t *testing.T) {
+	cases := map[string]string{
+		"203.0.113.7": "203.0.113.7/32",
+		"2001:db8::1": "2001:db8::1/128",
+	}
+
+	for input, want := range cases {
+		if got := hostPrefix(net.ParseIP(input)); got != want {
+			t.Errorf("%s: %s, ожидалось %s", input, got, want)
+		}
 	}
 }
