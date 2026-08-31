@@ -17,6 +17,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
+	"github.com/user/amnezia-web-client/internal/firewall"
 	"github.com/user/amnezia-web-client/internal/routing"
 )
 
@@ -47,6 +48,11 @@ type ConnectionStatus struct {
 	// Attempt — номер идущей попытки подключения. Ноль, когда соединение
 	// установлено или его нет вовсе.
 	Attempt int `json:"attempt,omitempty"`
+
+	// KillSwitch — блокировка трафика мимо туннеля сейчас действует.
+	// Важна именно во время разрыва: без неё «Переподключение» выглядит
+	// одинаково и когда трафик закрыт, и когда он утекает открытым.
+	KillSwitch bool `json:"kill_switch"`
 
 	// Statistics
 	BytesReceived uint64     `json:"bytes_received"`
@@ -104,6 +110,14 @@ type Manager struct {
 	// dns подменяет системные серверы имён на время соединения.
 	dns dnsControl
 
+	// Блокировка трафика мимо туннеля. driver — чем блокируем (nil, если в
+	// системе нечем), driverErr — почему нечем, killSwitchOn — настройка
+	// пользователя. Всё под mu; сами вызовы Apply и Clear идут под routeMu
+	// вместе с маршрутами.
+	firewallDriver firewall.Driver
+	firewallErr    error
+	killSwitchOn   bool
+
 	// Паузы между попытками переподключения. Поля, а не константы: иначе
 	// проверить политику повторов можно было бы только реальным ожиданием
 	// в секундах.
@@ -137,6 +151,19 @@ func NewManager() *Manager {
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
 	// resolv.conf, указывающим на исчезнувший адрес туннеля.
 	restoreOrphanedDNS()
+
+	// Блокировка тоже переживает падение процесса — в этом её смысл, но
+	// после смерти клиента она оставила бы машину без сети навсегда.
+	if driver, err := firewall.Detect(); err == nil {
+		m.firewallDriver = driver
+		if err := driver.Clear(); err != nil {
+			log.Printf("Не удалось снять блокировку от прошлого запуска: %v", err)
+		}
+	} else {
+		// Подробности — в журнал: в интерфейс уйдёт короткое объяснение.
+		log.Printf("Блокировка трафика мимо туннеля недоступна: %v", err)
+		m.firewallErr = err
+	}
 
 	go m.notifyLoop()
 
@@ -670,6 +697,11 @@ func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routingCfg *conf
 		log.Printf("Warning: failed to configure DNS: %v", err)
 	}
 
+	// Блокировка взводится здесь же, вместе с маршрутами: с этого момента
+	// трафик рассчитывает уйти в туннель, и с этого же момента его нельзя
+	// выпускать мимо. Снимается она не здесь — см. killswitch.go.
+	m.syncKillSwitch(cfg, routingCfg)
+
 	return nil
 }
 
@@ -678,6 +710,13 @@ func (m *Manager) buildUAPIConfig(cfg *config.AmneziaWGConfig) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("private_key=%s\n", hexEncodeKey(cfg.Interface.PrivateKey)))
+
+	// Метка на сокете ядра. По ней блокировка отличает наши же зашифрованные
+	// пакеты к серверу VPN от всего остального трафика — см. internal/firewall.
+	// Ставится всегда: на работу туннеля она не влияет, а привязывать её к
+	// настройке значило бы получить блокировку, которая не пропускает сам
+	// туннель, если включить её не в том порядке.
+	sb.WriteString(fmt.Sprintf("fwmark=%d\n", firewall.Mark))
 
 	// AmneziaWG specific parameters
 	if cfg.Interface.Jc > 0 {
@@ -1228,6 +1267,12 @@ func (m *Manager) releaseSystem() {
 // в интерфейсе оставалось одно слово без причины. Сбрасывает его либо новое
 // подключение, либо явное отключение.
 func (m *Manager) finish() {
+	// Блокировку снимаем до захвата mu: она берёт routeMu, а порядок
+	// «сначала routeMu, потом mu» держится по всему менеджеру.
+	m.routeMu.Lock()
+	m.clearKillSwitch()
+	m.routeMu.Unlock()
+
 	m.mu.Lock()
 	prevState, prevErr := m.status.State, m.status.Error
 

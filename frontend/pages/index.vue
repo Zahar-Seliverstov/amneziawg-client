@@ -55,6 +55,16 @@
       <!-- Причина отказа. Без неё на экране оставалось одно слово «Ошибка»,
            и понять, что случилось, можно было только из системного лога. -->
       <p v-if="connectionError" class="power__error">{{ connectionError }}</p>
+
+      <!-- Блокировка. Показываем именно во время разрыва: только так видно,
+           что трафик закрыт, а не утекает открытым, пока идёт восстановление. -->
+      <p v-if="killSwitchActive" class="power__guard">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+        Трафик мимо туннеля заблокирован
+      </p>
     </div>
 
     <!-- Переключение разделов -->
@@ -360,6 +370,7 @@ const selectedConfigId = ref<string | null>(null)
 let storedConfigId = ''
 
 const isConnected = computed(() => wsStatus.value?.state === 'connected')
+const killSwitchActive = computed(() => Boolean(wsStatus.value?.kill_switch))
 const isConnecting = computed(() => wsStatus.value?.state === 'connecting')
 const isReconnecting = computed(() => wsStatus.value?.state === 'reconnecting')
 

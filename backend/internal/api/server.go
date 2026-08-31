@@ -107,6 +107,10 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/autostart", s.handleGetAutostart).Methods("GET")
 	api.HandleFunc("/autostart", s.handleSetAutostart).Methods("PUT")
 
+	// Блокировка трафика мимо туннеля
+	api.HandleFunc("/kill-switch", s.handleGetKillSwitch).Methods("GET")
+	api.HandleFunc("/kill-switch", s.handleSetKillSwitch).Methods("PUT")
+
 	// Конфиг, выбранный на главном экране (к нему идёт автоподключение)
 	api.HandleFunc("/selected-config", s.handleGetSelectedConfig).Methods("GET")
 	api.HandleFunc("/selected-config", s.handleSetSelectedConfig).Methods("PUT")
@@ -685,6 +689,35 @@ func (s *Server) handleSetAutostart(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, s.autostart.State())
 }
 
+func (s *Server) handleGetKillSwitch(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, s.vpnManager.KillSwitchState())
+}
+
+func (s *Server) handleSetKillSwitch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	// Сохраняем до применения: настройка обязана пережить перезапуск, даже
+	// если применить её прямо сейчас не к чему.
+	settings := s.config.GetSettings()
+	settings.KillSwitch = req.Enabled
+	s.config.SetSettings(settings)
+
+	if err := s.config.Save(); err != nil {
+		jsonError(w, "Не удалось сохранить настройку", http.StatusInternalServerError)
+		return
+	}
+
+	s.vpnManager.SetKillSwitchEnabled(req.Enabled)
+
+	jsonResponse(w, s.vpnManager.KillSwitchState())
+}
+
 func (s *Server) handleGetSelectedConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"config_id": s.config.GetSelectedConfigID()})
 }
@@ -717,6 +750,11 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &settings) {
 		return
 	}
+
+	// Блокировка живёт за своим эндпоинтом: у неё есть доступность и
+	// применение на живом туннеле. Сюда она попадает только в ответе, и
+	// перезаписать её случайным PUT настроек нельзя.
+	settings.KillSwitch = s.config.GetSettings().KillSwitch
 
 	s.config.SetSettings(settings)
 

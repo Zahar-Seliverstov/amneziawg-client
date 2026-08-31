@@ -40,6 +40,8 @@ export interface ConnectionStatus {
   // attempt — номер идущей попытки подключения; отсутствует, когда соединение
   // установлено или его нет вовсе.
   attempt?: number
+  // kill_switch — блокировка трафика мимо туннеля сейчас действует
+  kill_switch?: boolean
   bytes_received: number
   bytes_sent: number
   last_handshake?: string
@@ -61,6 +63,22 @@ export interface RoutingConfig {
 
 export interface AppSettings {
   autoconnect: boolean
+  // kill_switch переключается своим эндпоинтом (setKillSwitch): у блокировки
+  // есть доступность, и включать её нужно вместе с применением на живом
+  // туннеле. Здесь поле только читается.
+  kill_switch?: boolean
+}
+
+// KillSwitchState — блокировка трафика мимо туннеля.
+export interface KillSwitchState {
+  // enabled — настройка включена пользователем
+  enabled: boolean
+  // available — блокировку вообще можно включить на этой машине
+  available: boolean
+  // active — блокировка сейчас действительно стоит
+  active: boolean
+  // reason — почему недоступна либо почему не действует при включённой настройке
+  reason?: string
 }
 
 export interface AutostartState {
@@ -185,6 +203,18 @@ export function useApi() {
     })
   }
   
+  // Блокировка трафика мимо туннеля
+  async function getKillSwitch(): Promise<KillSwitchState> {
+    return fetchApi<KillSwitchState>('/kill-switch')
+  }
+
+  async function setKillSwitch(enabled: boolean): Promise<KillSwitchState> {
+    return fetchApi<KillSwitchState>('/kill-switch', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    })
+  }
+
   // Выбранный на главном экране конфиг (к нему идёт автоподключение)
   async function getSelectedConfig(): Promise<string> {
     const res = await fetchApi<{ config_id: string }>('/selected-config')
@@ -239,6 +269,8 @@ export function useApi() {
     deleteRoutingRule,
     getAutostart,
     setAutostart,
+    getKillSwitch,
+    setKillSwitch,
     getSelectedConfig,
     setSelectedConfig,
     getSettings,

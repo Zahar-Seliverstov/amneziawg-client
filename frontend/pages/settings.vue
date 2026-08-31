@@ -77,6 +77,36 @@
         </label>
       </div>
 
+      <!-- Блокировка трафика мимо туннеля -->
+      <div class="setting-group">
+        <div class="setting-group__header">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span>Блокировка трафика</span>
+        </div>
+        <label class="setting-row" :class="{ 'setting-row--disabled': !killSwitch.available }">
+          <span class="setting-row__label">
+            <span>Не выпускать трафик мимо туннеля</span>
+            <span class="setting-row__note">
+              {{ killSwitchNote }}
+            </span>
+          </span>
+          <span class="toggle" :class="{ 'toggle--disabled': savingKillSwitch || !killSwitch.available }">
+            <input
+              type="checkbox"
+              v-model="killSwitch.enabled"
+              :disabled="savingKillSwitch || !killSwitch.available"
+              @change="saveKillSwitch"
+            />
+            <span class="toggle__track">
+              <span class="toggle__thumb"></span>
+            </span>
+          </span>
+        </label>
+      </div>
+
       <!-- Информация о приложении -->
       <div class="setting-group">
         <div class="setting-group__header">
@@ -109,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import type { AppSettings, AutostartState } from '~/composables/useApi'
+import type { AppSettings, AutostartState, KillSwitchState } from '~/composables/useApi'
 
 const api = useApi()
 
@@ -119,8 +149,24 @@ const settings = ref<AppSettings>({
 // null — состояние ещё не удалось получить, '' — конфигурация не выбрана.
 const selectedConfigName = ref<string | null>(null)
 const autostart = ref<AutostartState>({ enabled: false, available: false })
+const killSwitch = ref<KillSwitchState>({ enabled: false, available: false, active: false })
 const saving = ref(false)
 const savingAutostart = ref(false)
+const savingKillSwitch = ref(false)
+
+// Объяснение важнее переключателя. Блокировка режет ЛВС и работает не при
+// любой маршрутизации, и узнать об этом постфактум — худший вариант.
+const killSwitchNote = computed(() => {
+  if (!killSwitch.value.available) {
+    return killSwitch.value.reason || 'Блокировка недоступна на этой машине'
+  }
+  if (killSwitch.value.enabled && killSwitch.value.reason) {
+    return killSwitch.value.reason
+  }
+  return 'При обрыве туннеля трафик не уходит в обход, а блокируется до восстановления связи. '
+    + 'Пока блокировка действует, локальная сеть тоже недоступна. '
+    + 'Работает только когда весь трафик идёт через VPN, без исключений в маршрутизации'
+})
 
 // Версия приходит от backend'а: единственный источник — манифест Tauri,
 // откуда её подставляют на сборке.
@@ -147,6 +193,22 @@ async function saveSettings() {
   }
 }
 
+// Блокировка живёт своим эндпоинтом: у неё есть доступность, и включение
+// применяется к живому туннелю сразу.
+async function saveKillSwitch() {
+  savingKillSwitch.value = true
+  const desired = killSwitch.value.enabled
+  try {
+    killSwitch.value = await api.setKillSwitch(desired)
+    notify(desired ? 'Блокировка включена' : 'Блокировка выключена')
+  } catch (e: any) {
+    killSwitch.value.enabled = !desired
+    notify(e.message || 'Не удалось изменить блокировку', 'error')
+  } finally {
+    savingKillSwitch.value = false
+  }
+}
+
 // Автозапуск живёт не в настройках приложения, а ярлыком в системе, поэтому
 // сохраняется отдельным запросом и состояние берём из ответа backend'а.
 async function saveAutostart() {
@@ -167,16 +229,28 @@ async function saveAutostart() {
 // backend старее интерфейса) не должен обнулять остальные — иначе страница
 // врёт, что автоподключение выключено, а конфигурация не выбрана.
 onMounted(async () => {
-  const [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes] = await Promise.allSettled([
+  const [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes, killSwitchRes] = await Promise.allSettled([
     api.getConfigs(),
     api.getSettings(),
     api.getSelectedConfig(),
     api.getAutostart(),
-    api.getVersion()
+    api.getVersion(),
+    api.getKillSwitch()
   ])
 
   if (versionRes.status === 'fulfilled') {
     version.value = versionRes.value
+  }
+
+  if (killSwitchRes.status === 'fulfilled') {
+    killSwitch.value = killSwitchRes.value
+  } else {
+    killSwitch.value = {
+      enabled: false,
+      available: false,
+      active: false,
+      reason: 'Backend не ответил на запрос о блокировке — обнови и перезапусти его'
+    }
   }
 
   if (settingsRes.status === 'fulfilled') {
@@ -197,7 +271,7 @@ onMounted(async () => {
     }
   }
 
-  for (const res of [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes]) {
+  for (const res of [cfgsRes, settingsRes, selectedRes, autostartRes, versionRes, killSwitchRes]) {
     if (res.status === 'rejected') console.error('Ошибка загрузки настроек:', res.reason)
   }
 })

@@ -43,6 +43,11 @@ func (s appState) clone() appState {
 // AppSettings holds user preferences
 type AppSettings struct {
 	Autoconnect bool `json:"autoconnect"`
+
+	// KillSwitch — не выпускать трафик мимо туннеля. Хранится здесь, но
+	// переключается своим эндпоинтом: у блокировки есть доступность, и
+	// включать её нужно вместе с применением на живом туннеле.
+	KillSwitch bool `json:"kill_switch"`
 }
 
 // AppConfig — состояние приложения и единственная точка доступа к нему.
