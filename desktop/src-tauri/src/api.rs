@@ -6,6 +6,7 @@
 // просто закрывает соединение, так что тело читается до EOF.
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -18,6 +19,33 @@ pub fn url() -> String {
 
 pub fn addr() -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, PORT))
+}
+
+/// Файл с токеном доступа. Его пишет backend при запуске с правами 0600 на
+/// имя пользователя рабочего стола — прочитать может только он.
+pub fn token_path() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".config/awg-client/token")
+}
+
+/// Токен доступа к API.
+///
+/// Читается при каждом запросе, а не запоминается: backend рождает новый
+/// токен на каждый запуск, и запомненный протух бы после его перезапуска.
+/// Файл крошечный, а запросов здесь единицы в секунду.
+pub fn token() -> Option<String> {
+    let raw = std::fs::read_to_string(token_path()).ok()?;
+    let trimmed = raw.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+/// Адрес интерфейса вместе с токеном: по нему backend выдаёт cookie и
+/// перенаправляет на чистый адрес, чтобы токен не осел в истории.
+pub fn url_with_token() -> String {
+    match token() {
+        Some(t) => format!("http://127.0.0.1:{PORT}/?token={t}"),
+        None => url(),
+    }
 }
 
 /// Backend уже слушает порт?
@@ -71,10 +99,20 @@ fn request(method: &str, path: &str, body: Option<&str>) -> io::Result<String> {
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let body = body.unwrap_or_default();
+
+    // Без токена API отвечает отказом: он закрыт от остальных пользователей
+    // машины. Здесь заголовок, а не cookie, — так ходят все клиенты, кроме
+    // браузера.
+    let authorization = match token() {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let head = format!(
         "{method} {path} HTTP/1.0\r\n\
          Host: 127.0.0.1:{PORT}\r\n\
          Content-Type: application/json\r\n\
+         {authorization}\
          Content-Length: {}\r\n\r\n",
         body.len()
     );

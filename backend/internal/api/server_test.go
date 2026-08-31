@@ -21,6 +21,9 @@ func request(t *testing.T, s *Server, method, path, body string, headers map[str
 
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
+	// Токен по умолчанию: проверки самой аутентификации живут отдельно, в
+	// auth_test.go, а остальным тестам она только мешала бы.
+	req.Header.Set("Authorization", "Bearer "+s.token.Value())
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

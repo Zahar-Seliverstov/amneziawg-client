@@ -105,7 +105,7 @@ export function useApi() {
     const res = await fetch(useApiUrl(path), {
       ...options,
       headers: {
-        'Content-Type': 'application/json',
+        ...useApiHeaders(),
         ...options.headers
       }
     })
@@ -115,6 +115,9 @@ export function useApi() {
     // «Unexpected token» из парсера.
     const data = await res.json().catch(() => null)
 
+    if (res.status === 401) {
+      throw new Error('Нет доступа к службе: откройте приложение по ссылке с токеном')
+    }
     if (!res.ok) {
       throw new Error(data?.error || `Ошибка ${res.status}`)
     }

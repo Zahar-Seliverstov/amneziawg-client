@@ -85,6 +85,9 @@ fn config_path() -> PathBuf {
 /// Запускаем backend от root. pkexec сам покажет системный диалог, а на
 /// машине без polkit пробуем запустить напрямую — этого хватает, если
 /// оболочку уже запустили с правами root.
+///
+/// Файл с токеном доступа backend пишет до того, как начинает слушать порт,
+/// поэтому к моменту, когда порт откликнулся, токен уже на месте.
 fn spawn_backend(bin: &Path) -> io::Result<Child> {
     let config = config_path();
     let parent_pid = std::process::id().to_string();
@@ -280,7 +283,7 @@ fn main() {
                 };
 
                 match result {
-                    Ok(()) => match Url::parse(&api::url()) {
+                    Ok(()) => match Url::parse(&api::url_with_token()) {
                         Ok(url) => {
                             if let Err(e) = window.navigate(url) {
                                 let _ =

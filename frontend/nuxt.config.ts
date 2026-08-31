@@ -17,7 +17,11 @@ export default defineNuxtConfig({
   // composables/useBackend.ts). Переопределяется через NUXT_PUBLIC_BACKEND_ORIGIN.
   runtimeConfig: {
     public: {
-      backendOrigin: 'http://127.0.0.1:8081'
+      backendOrigin: 'http://127.0.0.1:8081',
+      // Токен доступа для разработки: страницу отдаёт сервер Nuxt, cookie
+      // ему никто не выдавал. Подставляется через NUXT_PUBLIC_BACKEND_TOKEN
+      // (это делает start.sh). В рабочем режиме пусто — работает cookie.
+      backendToken: ''
     }
   },
   

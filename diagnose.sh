@@ -21,6 +21,22 @@ BACKEND_BIN="$SCRIPT_DIR/backend/build/awg-client"
 REPORT="$SCRIPT_DIR/diag-report.txt"
 BACKEND_LOG="$(mktemp /tmp/awg-diag-backend.XXXXXX.log)"
 DIAG_PORT=8099
+
+# Токен доступа: backend закрыт от остальных пользователей машины. Файл он
+# пишет до того, как начинает слушать порт, поэтому к моменту первого запроса
+# токен уже на месте.
+diag_token() {
+    cat "$HOME/.config/awg-client/token" 2>/dev/null
+}
+
+# Обёртка над curl: подставляет токен и адрес backend'а.
+api() {
+    local method="$1" path="$2"; shift 2
+    curl -s -m 20 -X "$method" \
+        -H "Authorization: Bearer $(diag_token)" \
+        -H "Content-Type: application/json" \
+        "$@" "http://127.0.0.1:$DIAG_PORT$path"
+}
 CONFIG_FILE="$HOME/.config/awg-client/config.json"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -48,7 +64,7 @@ restore() {
     say "Возвращаю всё назад..."
 
     # отключаем наш туннель
-    curl -s -m 5 -X POST "http://127.0.0.1:$DIAG_PORT/api/vpn/disconnect" >/dev/null 2>&1
+    api POST /api/vpn/disconnect >/dev/null 2>&1
     sleep 2
 
     if [ -n "$DIAG_BACKEND_PID" ]; then
@@ -133,15 +149,15 @@ sudo -n env HOME="$HOME" "$BACKEND_BIN" -host 127.0.0.1 -port "$DIAG_PORT" -conf
 DIAG_BACKEND_PID=$!
 
 for i in $(seq 1 20); do
-    curl -sf -o /dev/null -m 2 "http://127.0.0.1:$DIAG_PORT/api/vpn/status" && break
+    api GET /api/vpn/status >/dev/null 2>&1 && break
     sleep 1
 done
-curl -sf -o /dev/null -m 2 "http://127.0.0.1:$DIAG_PORT/api/vpn/status" || { err "Backend не поднялся"; exit 1; }
+api GET /api/vpn/status >/dev/null 2>&1 || { err "Backend не поднялся"; exit 1; }
 ok "Backend работает"
 
 # Берём первый конфиг; можно указать имя: ./diagnose.sh "имя конфига"
 WANT_NAME="${1:-}"
-CONFIGS_JSON="$(curl -s -m 5 "http://127.0.0.1:$DIAG_PORT/api/configs")"
+CONFIGS_JSON="$(api GET /api/configs)"
 read -r CONFIG_ID CONFIG_NAME <<< "$(printf '%s' "$CONFIGS_JSON" | python3 -c '
 import sys, json
 want = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -163,7 +179,7 @@ fi
 ok "Конфиг: $CONFIG_NAME"
 
 sec "ПАРАМЕТРЫ КОНФИГА (без ключей)"
-curl -s -m 5 "http://127.0.0.1:$DIAG_PORT/api/configs" | python3 -c '
+api GET /api/configs | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 c = d[0]
@@ -187,16 +203,14 @@ for p in c["peers"]:
 # ── подключаемся ────────────────────────────────────────────────────────────
 say "Подключаю туннель..."
 sec "ОТВЕТ НА CONNECT"
-curl -s -m 20 -X POST "http://127.0.0.1:$DIAG_PORT/api/vpn/connect" \
-    -H 'Content-Type: application/json' \
-    -d "{\"config_id\":\"$CONFIG_ID\"}" >> "$REPORT" 2>&1
+api POST /api/vpn/connect -d "{\"config_id\":\"$CONFIG_ID\"}" >> "$REPORT" 2>&1
 rep ""
 
 say "Жду 20 секунд, чтобы прошёл хендшейк..."
 sleep 20
 
 sec "СТАТУС В ПРИЛОЖЕНИИ"
-run curl -s -m 5 "http://127.0.0.1:$DIAG_PORT/api/vpn/status"
+rep "$(api GET /api/vpn/status)"
 rep ""
 
 sec "ИНТЕРФЕЙС awg0"
@@ -216,7 +230,7 @@ run cat /etc/resolv.conf
 # Такого процесса больше нет: ядро подключено к backend'у библиотекой, и всё,
 # что оно знает о туннеле, backend отдаёт в статусе.
 sec "СОСТОЯНИЕ ТУННЕЛЯ — был ли хендшейк"
-curl -s -m 5 "http://127.0.0.1:$DIAG_PORT/api/vpn/status" | python3 -c '
+api GET /api/vpn/status | python3 -c '
 import json, sys, datetime
 
 try:

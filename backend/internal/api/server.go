@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/user/amnezia-web-client/internal/auth"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/version"
@@ -31,6 +32,11 @@ type Server struct {
 	vpnManager *vpn.Manager
 	autostart  *autostart.Manager
 
+	// token закрывает API от остальных пользователей машины — см. auth.go.
+	// Нулевое значение отказывает всем: забытый токен обязан ломать доступ
+	// заметно, а не открывать его молча.
+	token *auth.Token
+
 	// WebSocket connections for real-time updates
 	wsClients  map[*wsClient]bool
 	wsMu       sync.RWMutex
@@ -38,12 +44,13 @@ type Server struct {
 }
 
 // NewServer creates a new API server
-func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, autostartMgr *autostart.Manager) *Server {
+func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, autostartMgr *autostart.Manager, token *auth.Token) *Server {
 	s := &Server{
 		router:     mux.NewRouter(),
 		config:     cfg,
 		vpnManager: vpnMgr,
 		autostart:  autostartMgr,
+		token:      token,
 		wsClients:  make(map[*wsClient]bool),
 		wsUpgrader: websocket.Upgrader{
 			// Без предела рукопожатие может висеть бесконечно, занимая
@@ -119,7 +126,10 @@ func (s *Server) setupRoutes() {
 	// mux вызывает middleware ТОЛЬКО для совпавших маршрутов. Маршрутов на
 	// OPTIONS здесь нет, поэтому preflight-запрос уходил в NotFoundHandler и
 	// отдавал 404 без Access-Control-Allow-Origin — браузер блокировал всё.
-	s.handler = corsMiddleware(s.router)
+	// Порядок важен: CORS отвечает на preflight сам и до проверки токена.
+	// Браузер не шлёт cookie в preflight, поэтому проверка отказала бы ему —
+	// и настоящий запрос браузер бы уже не отправил.
+	s.handler = corsMiddleware(s.authMiddleware(s.router))
 }
 
 // ServeHTTP implements http.Handler
@@ -181,7 +191,9 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Vary", "Origin")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		// Authorization нужен клиентам, у которых нет cookie: интерфейс в
+		// режиме разработки живёт на своём порту и ходит с токеном в заголовке.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		// Preflight завершаем здесь: до роутера он всё равно не дойдёт.
 		if r.Method == http.MethodOptions {

@@ -212,6 +212,15 @@ start_backend() {
 
 # ─── Запуск frontend от пользователя ─────────────────────────────────────────
 start_frontend() {
+    # Токен доступа: backend закрыт от остальных пользователей машины, а
+    # интерфейс в разработке живёт на своём порту и cookie не получает —
+    # значит токен ему нужно передать явно.
+    AWG_TOKEN="$(cat "$CONFIG_DIR/token" 2>/dev/null || true)"
+    if [ -z "$AWG_TOKEN" ]; then
+        log_warn "Не найден $CONFIG_DIR/token — интерфейс не сможет обратиться к backend"
+    fi
+    export NUXT_PUBLIC_BACKEND_TOKEN="$AWG_TOKEN"
+
     log_info "Запуск frontend на http://127.0.0.1:$FRONTEND_PORT ..."
     cd "$FRONTEND_DIR" || return 1
 
@@ -253,6 +262,9 @@ main() {
     echo ""
     echo -e "  ${BLUE}Интерфейс:${NC}   http://127.0.0.1:$FRONTEND_PORT"
     echo -e "  ${BLUE}Backend API:${NC} http://127.0.0.1:$BACKEND_PORT/api"
+    if [ -n "${AWG_TOKEN:-}" ]; then
+        echo -e "  ${BLUE}Прямая ссылка:${NC} http://127.0.0.1:$BACKEND_PORT/?token=$AWG_TOKEN"
+    fi
     echo ""
     echo -e "  ${YELLOW}Ctrl+C${NC} — остановить всё"
     echo -e "${GREEN}════════════════════════════════════════════${NC}"

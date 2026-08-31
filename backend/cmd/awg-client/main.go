@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/user/amnezia-web-client/internal/api"
+	"github.com/user/amnezia-web-client/internal/auth"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/desktopuser"
 	"github.com/user/amnezia-web-client/internal/version"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
@@ -97,8 +99,16 @@ func main() {
 	// опознаёт пользователя рабочего стола.
 	autostartMgr := autostart.NewManager(resolvedPath, *desktopExe)
 
+	// Токен доступа. Рождается до того, как откроется хоть один сокет:
+	// иначе между началом приёма запросов и появлением проверки была бы
+	// щель, в которую пролезает кто угодно.
+	token, err := newToken(resolvedPath)
+	if err != nil {
+		log.Fatalf("Не удалось подготовить токен доступа: %v", err)
+	}
+
 	// Create API server
-	server := api.NewServer(appConfig, vpnManager, autostartMgr)
+	server := api.NewServer(appConfig, vpnManager, autostartMgr, token)
 	server.StartPingLoop()
 
 	autoconnect(appConfig, vpnManager)
@@ -119,10 +129,32 @@ func main() {
 	}
 
 	log.Printf("Starting API server on %s:%d", *host, *port)
+	log.Printf("Интерфейс: http://127.0.0.1:%d/?%s=%s", *port, auth.QueryParam, token.Value())
 
 	if err := serve(*host, *port, server, vpnManager); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// newToken готовит секрет доступа и кладёт его в файл, читаемый только
+// пользователем рабочего стола.
+//
+// Backend работает от root, поэтому файл ему же и принадлежал бы: оболочка и
+// диагностика, работающие от пользователя, не смогли бы его прочитать, а
+// значит и обратиться к API.
+func newToken(configPath string) (*auth.Token, error) {
+	token, err := auth.New()
+	if err != nil {
+		return nil, err
+	}
+
+	path := auth.FilePath(configPath)
+	if err := token.Save(path, desktopuser.Resolve(configPath)); err != nil {
+		return nil, fmt.Errorf("не удалось записать %s: %w", path, err)
+	}
+
+	log.Printf("Токен доступа записан в %s", path)
+	return token, nil
 }
 
 // resolveConfigPath доводит путь конфига до пригодного к использованию:

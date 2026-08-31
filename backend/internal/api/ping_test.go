@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/user/amnezia-web-client/internal/auth"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/vpn"
@@ -117,7 +118,12 @@ func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
 		appCfg.SetSelectedConfig(cfgs[0].ID)
 	}
 
-	return NewServer(appCfg, vpn.NewManager(), autostart.NewManager(filepath.Join(dir, "a.desktop"), ""))
+	token, err := auth.New()
+	if err != nil {
+		t.Fatalf("токен: %v", err)
+	}
+
+	return NewServer(appCfg, vpn.NewManager(), autostart.NewManager(filepath.Join(dir, "a.desktop"), ""), token)
 }
 
 func doPing(t *testing.T, s *Server) pingResponse {

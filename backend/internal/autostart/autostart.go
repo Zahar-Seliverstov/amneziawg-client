@@ -7,10 +7,9 @@ package autostart
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
-	"syscall"
+
+	"github.com/user/amnezia-web-client/internal/desktopuser"
 )
 
 // Manager управляет ярлыком автозапуска для пользователя рабочего стола.
@@ -20,9 +19,8 @@ import (
 // сидит за десктопом, и ему же передаются во владение — иначе root-овый файл
 // нельзя будет ни удалить, ни отредактировать из сессии пользователя.
 type Manager struct {
-	home       string // домашний каталог пользователя рабочего стола
-	uid, gid   int    // его же uid/gid, чтобы не оставлять root-овых файлов
-	desktopExe string // путь к оболочке; пусто — автозапуск недоступен
+	user       desktopuser.User // чей это рабочий стол
+	desktopExe string           // путь к оболочке; пусто — автозапуск недоступен
 }
 
 // State описывает автозапуск для UI.
@@ -54,50 +52,9 @@ var (
 // разработки. Без него ищем по стандартным местам установки.
 // configPath нужен, чтобы опознать пользователя, когда pkexec не подсказал.
 func NewManager(configPath, desktopExe string) *Manager {
-	m := &Manager{}
-	m.home, m.uid, m.gid = resolveDesktopUser(configPath)
-	m.desktopExe = resolveDesktopExe(desktopExe, m.home)
+	m := &Manager{user: desktopuser.Resolve(configPath)}
+	m.desktopExe = resolveDesktopExe(desktopExe, m.user.Home)
 	return m
-}
-
-// resolveDesktopUser возвращает дом, uid и gid пользователя рабочего стола.
-func resolveDesktopUser(configPath string) (home string, uid, gid int) {
-	uid, gid = os.Getuid(), os.Getgid()
-
-	// pkexec/sudo сообщают, от чьего имени их вызвали.
-	for _, key := range []string{"PKEXEC_UID", "SUDO_UID"} {
-		if raw := os.Getenv(key); raw != "" {
-			if parsed, err := strconv.Atoi(raw); err == nil {
-				if u, err := user.LookupId(strconv.Itoa(parsed)); err == nil {
-					gid, _ := strconv.Atoi(u.Gid)
-					return u.HomeDir, parsed, gid
-				}
-			}
-		}
-	}
-
-	// Иначе смотрим, кому принадлежит файл конфигурации: его создаёт
-	// оболочка от имени пользователя ещё до запуска backend'а.
-	if configPath != "" {
-		for _, path := range []string{configPath, filepath.Dir(configPath)} {
-			info, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-			stat, ok := info.Sys().(*syscall.Stat_t)
-			if !ok {
-				continue
-			}
-			if u, err := user.LookupId(strconv.FormatUint(uint64(stat.Uid), 10)); err == nil {
-				return u.HomeDir, int(stat.Uid), int(stat.Gid)
-			}
-		}
-	}
-
-	if u, err := user.Current(); err == nil {
-		return u.HomeDir, uid, gid
-	}
-	return os.Getenv("HOME"), uid, gid
 }
 
 func resolveDesktopExe(hint, home string) string {
@@ -127,10 +84,10 @@ func isExecutable(path string) bool {
 
 // EntryPath — путь к ярлыку автозапуска.
 func (m *Manager) EntryPath() string {
-	if m.home == "" {
+	if m.user.Home == "" {
 		return ""
 	}
-	return filepath.Join(m.home, ".config", "autostart", "awg-client.desktop")
+	return filepath.Join(m.user.Home, ".config", "autostart", "awg-client.desktop")
 }
 
 // State сообщает UI, включён ли автозапуск и можно ли его вообще включить.
@@ -138,7 +95,7 @@ func (m *Manager) State() State {
 	enabled := m.IsEnabled()
 
 	switch {
-	case m.home == "":
+	case m.user.Home == "":
 		return State{Enabled: enabled, Reason: "Не удалось определить домашний каталог пользователя"}
 	case m.desktopExe == "":
 		// Ярлык мог остаться от прежней установки — тогда его как минимум
@@ -211,10 +168,7 @@ func (m *Manager) SetEnabled(enabled bool) error {
 // chown отдаёт созданное пользователю рабочего стола: backend работает от
 // root, и без этого файл остался бы неудаляемым из обычной сессии.
 func (m *Manager) chown(path string) {
-	if os.Getuid() != 0 || m.uid == 0 {
-		return
-	}
-	if err := os.Chown(path, m.uid, m.gid); err != nil {
+	if err := m.user.Own(path); err != nil {
 		fmt.Fprintf(os.Stderr, "autostart: не удалось сменить владельца %s: %v\n", path, err)
 	}
 }
