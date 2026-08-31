@@ -26,14 +26,35 @@ jobs:
 
       # Расхождение версии в теге и в манифестах — ровно то, из-за чего в
       # релизе оказываются файлы с чужим номером. Ловим до сборки.
-      - name: Проверить, что версия в тегe и в манифестах совпадают
+      #
+      # Проверяем ВСЕ манифесты, а не один. Номер объявлен в трёх местах, и
+      # разъезжается ровно тот, который забыли: раньше сверялся только
+      # tauri.conf.json, и .deb мог уехать с чужим номером в имени пакета.
+      - name: Проверить, что версия в теге и в манифестах совпадает
         run: |
           version='${{ steps.version.outputs.value }}'
-          manifest=$(python3 -c "import json;print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
-          if [ "$version" != "$manifest" ]; then
-            echo "::error::тег v$version, а в tauri.conf.json версия $manifest"
-            exit 1
-          fi
+          fail=0
+
+          check() {
+            if [ "$2" != "$version" ]; then
+              echo "::error::тег v$version, а в $1 версия ${2:-<не найдена>}"
+              fail=1
+            fi
+          }
+
+          check desktop/src-tauri/tauri.conf.json \
+            "$(python3 -c "import json;print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")"
+          check desktop/package.json \
+            "$(python3 -c "import json;print(json.load(open('desktop/package.json'))['version'])")"
+          check desktop/src-tauri/Cargo.toml \
+            "$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml)"
+
+          # CHANGELOG обязан описывать выпускаемую версию: из него берутся
+          # заметки к релизу, и без раздела релиз выйдет пустым.
+          grep -q "^## \[$version\]" CHANGELOG.md \
+            || { echo "::error::в CHANGELOG.md нет раздела ## [$version]"; fail=1; }
+
+          exit $fail
 
       - uses: actions/setup-go@v7
         with:

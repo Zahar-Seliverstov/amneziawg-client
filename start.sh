@@ -94,12 +94,11 @@ check_dependencies() {
 
     [ -e /dev/net/tun ] || log_warn "Нет /dev/net/tun — VPN не подключится (sudo modprobe tun)"
 
-    local awg_found=""
-    for p in /opt/AmneziaVPN/bin/amneziawg-go /usr/local/bin/amneziawg-go /usr/bin/amneziawg-go; do
-        [ -x "$p" ] && { awg_found="$p"; break; }
-    done
-    [ -z "$awg_found" ] && command -v amneziawg-go &>/dev/null && awg_found="$(command -v amneziawg-go)"
-    [ -z "$awg_found" ] && log_warn "amneziawg-go не найден — интерфейс поднимется, VPN нет"
+    # Ядро amneziawg-go подключено к backend'у библиотекой и работает внутри
+    # его процесса. Отдельный бинарник в системе не нужен и не ищется.
+
+    # Маршруты и адреса ставятся вызовами ip из iproute2.
+    command -v ip &>/dev/null || log_warn "Нет команды ip (iproute2) — маршруты не настроятся"
 
     log_success "Зависимости в порядке"
 }

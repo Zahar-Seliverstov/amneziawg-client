@@ -22,7 +22,6 @@ REPORT="$SCRIPT_DIR/diag-report.txt"
 BACKEND_LOG="$(mktemp /tmp/awg-diag-backend.XXXXXX.log)"
 DIAG_PORT=8099
 CONFIG_FILE="$HOME/.config/awg-client/config.json"
-SOCK=/var/run/amneziawg/awg0.sock
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 say()  { echo -e "${BLUE}[..]${NC} $1"; }
@@ -60,7 +59,6 @@ restore() {
 
     # подчищаем свои следы на случай, если туннель не убрался сам
     sudo -n ip link delete awg0 2>/dev/null
-    sudo -n rm -f "$SOCK" 2>/dev/null
 
     if [ "$AMNEZIA_WAS_RUNNING" -eq 1 ]; then
         say "Запускаю AmneziaVPN обратно..."
@@ -123,7 +121,6 @@ if systemctl is-active --quiet AmneziaVPN; then
 fi
 sudo -n ip link delete amn0 2>/dev/null
 sudo -n ip link delete awg0 2>/dev/null
-sudo -n rm -f "$SOCK" 2>/dev/null
 
 sec "СОСТОЯНИЕ БЕЗ VPN"
 run ip -brief address show
@@ -214,40 +211,36 @@ sec "DNS ПОСЛЕ ПОДКЛЮЧЕНИЯ"
 run resolvectl status awg0 --no-pager
 run cat /etc/resolv.conf
 
-# ── самое важное: состояние туннеля из самого amneziawg-go ──────────────────
-sec "СОСТОЯНИЕ ТУННЕЛЯ (UAPI) — был ли хендшейк"
-sudo -n python3 - "$SOCK" >> "$REPORT" 2>&1 <<'PY'
-import socket, sys, time
-path = sys.argv[1]
+# ── самое важное: было ли рукопожатие ───────────────────────────────────────
+# Раньше здесь читался UAPI из unix-сокета отдельного процесса amneziawg-go.
+# Такого процесса больше нет: ядро подключено к backend'у библиотекой, и всё,
+# что оно знает о туннеле, backend отдаёт в статусе.
+sec "СОСТОЯНИЕ ТУННЕЛЯ — был ли хендшейк"
+curl -s -m 5 "http://127.0.0.1:$DIAG_PORT/api/vpn/status" | python3 -c '
+import json, sys, datetime
+
 try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(5)
-    s.connect(path)
-    s.sendall(b"get=1\n\n")
-    buf = b""
-    while True:
-        chunk = s.recv(4096)
-        if not chunk:
-            break
-        buf += chunk
-        if buf.endswith(b"\n\n"):
-            break
-    for line in buf.decode(errors="replace").splitlines():
-        k = line.split("=", 1)[0]
-        if k in ("private_key", "preshared_key", "header_protection_key"):
-            print(f"{k}=<вырезано>")
-            continue
-        if line.startswith("last_handshake_time_sec="):
-            v = int(line.split("=")[1])
-            if v == 0:
-                print(line, "   <<< ХЕНДШЕЙКА НЕ БЫЛО")
-            else:
-                print(line, f"   <<< {int(time.time())-v} сек назад")
-            continue
-        print(line)
+    st = json.load(sys.stdin)
 except Exception as e:
-    print("не удалось прочитать UAPI:", e)
-PY
+    print("не удалось прочитать статус:", e)
+    raise SystemExit
+
+print("состояние:      ", st.get("state"))
+print("конфигурация:   ", st.get("config_name") or "—")
+print("интерфейс:      ", st.get("interface") or "—")
+print("принято/отдано: ", st.get("bytes_received"), "/", st.get("bytes_sent"))
+
+handshake = st.get("last_handshake")
+if not handshake:
+    print("рукопожатие:     ХЕНДШЕЙКА НЕ БЫЛО")
+else:
+    when = datetime.datetime.fromisoformat(handshake.replace("Z", "+00:00"))
+    ago = (datetime.datetime.now(when.tzinfo) - when).total_seconds()
+    print(f"рукопожатие:     {handshake} ({int(ago)} сек назад)")
+
+if st.get("error"):
+    print("ошибка:         ", st["error"])
+' >> "$REPORT" 2>&1
 
 sec "ПРОВЕРКА СВЯЗИ ЧЕРЕЗ ТУННЕЛЬ"
 run ping -c 3 -W 3 1.1.1.1
@@ -258,7 +251,7 @@ echo "\$ curl -4 https://example.com" >> "$REPORT"
 curl -4 -s -o /dev/null -m 15 -w "HTTP %{http_code} за %{time_total}s\n" https://example.com/ >> "$REPORT" 2>&1 \
     || echo "ПРОВАЛ (нет соединения)" >> "$REPORT"
 
-sec "ЛОГ BACKEND И amneziawg-go"
+sec "ЛОГ BACKEND"
 rep ""
 cat "$BACKEND_LOG" >> "$REPORT" 2>&1
 

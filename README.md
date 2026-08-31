@@ -10,11 +10,11 @@
 
 ```sh
 # Debian, Ubuntu и производные
-sudo apt install ./awg-client_1.0.0_amd64.deb
+sudo apt install ./awg-client_<версия>_amd64.deb
 
 # Любой дистрибутив
-chmod +x awg-client_1.0.0_amd64.AppImage
-./awg-client_1.0.0_amd64.AppImage
+chmod +x awg-client_<версия>_amd64.AppImage
+./awg-client_<версия>_amd64.AppImage
 ```
 
 Файлы можно сверить с `SHA256SUMS` из того же релиза:
@@ -57,15 +57,17 @@ Backend поднимает API и веб-интерфейс на одном по
 
 ## Выпуск релиза
 
-Версия живёт в трёх местах и должна совпадать с тегом, иначе сборка в CI
-остановится: `desktop/package.json`, `desktop/src-tauri/Cargo.toml` (и
-`Cargo.lock`), `desktop/src-tauri/tauri.conf.json`.
+Версия объявлена в трёх манифестах и должна совпадать с тегом, иначе сборка в
+CI остановится: `desktop/package.json`, `desktop/src-tauri/Cargo.toml` (и
+`Cargo.lock`), `desktop/src-tauri/tauri.conf.json`. Больше её нигде вписывать
+не нужно: backend получает номер из `tauri.conf.json` на сборке, а интерфейс
+запрашивает его у backend'а.
 
 ```sh
 # 1. Поднять версию в манифестах и описать изменения в CHANGELOG.md
 # 2. Закоммитить, затем:
-git tag -a v1.0.0 -m "AWG Client 1.0.0"
-git push origin main v1.0.0
+git tag -a v1.2.3 -m "AWG Client 1.2.3"
+git push origin main v1.2.3
 ```
 
 Дальше всё делает [workflow](.github/workflows/release.yml): собирает `.deb`
