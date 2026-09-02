@@ -187,6 +187,15 @@ export function useApi() {
   async function getRouting(): Promise<RoutingConfig> {
     return fetchApi<RoutingConfig>('/routing')
   }
+
+  // Источник правила — то общее, по чему правила сводятся в группу:
+  // git.dtel.ru, bitrix.dtel.ru и адрес того же сервера дадут «dtel.ru».
+  // Отдельным запросом, потому что ответ приходит из DNS и может задержаться,
+  // а список правил обязан показаться сразу. Ключ — идентификатор правила;
+  // правила без известного источника в ответе отсутствуют.
+  async function getRoutingSources(): Promise<Record<string, string>> {
+    return fetchApi<Record<string, string>>('/routing/sources')
+  }
   
   async function setRoutingMode(mode: RoutingMode): Promise<void> {
     await fetchApi('/routing/mode', {
@@ -286,6 +295,7 @@ export function useApi() {
     connect,
     disconnect,
     getRouting,
+    getRoutingSources,
     setRoutingMode,
     setRouting,
     addRoutingRule,

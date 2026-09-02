@@ -35,6 +35,18 @@
   --btn-hi:      #3d434d;
   --btn-hi-lo:   #2f343d;
 
+  /* Цвета групп правил. Это единственное место, где цвет не означает
+     состояние: он отвечает на вопрос «то же это хозяйство или другое»
+     быстрее, чем чтение имён. Оттенки взяты в стороне от зелёного,
+     янтарного и красного — иначе группа читалась бы как «подключено»
+     или «ошибка». */
+  --group-1:     #4f9dff;
+  --group-2:     #a978ff;
+  --group-3:     #2fb8b0;
+  --group-4:     #ef6ea8;
+  --group-5:     #e59a4a;
+  --group-6:     #b6d94c;
+
   --r:           12px;
   --r-sm:        9px;
 }
@@ -296,17 +308,19 @@ body {
   flex-shrink: 0;
 }
 
-/* ─── Поиск ─────────────────────────────────────────────────────────────── */
+/* ─── Поле правил: поиск и добавление в одном ─────────────────────────────
 
-/* Поле поиска — сама рамка, а внутри лупа, ввод и кнопка очистки лежат
-   в ряд. Раньше значки позиционировались вручную через absolute и проценты,
-   и лупа не попадала в центр по вертикали. Теперь выравнивает флексбокс. */
-.search {
+   Раньше здесь стояли три элемента: выбор типа, поле ввода и кнопка, а
+   отдельно от них — поиск. Тип приходилось выбирать руками, и ошибиться в
+   нём было проще, чем в самом значении. Теперь поле одно: пока набранное не
+   складывается в правило, оно ищет по списку; сложилось — справа появляется
+   вид правила и кнопка. */
+.rule-field {
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 0 5px 0 12px;
-  margin-bottom: 9px;
+  margin-bottom: 8px;
   background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
@@ -315,18 +329,34 @@ body {
   transition: border-color 0.15s ease;
 }
 
-.search:focus-within {
+.rule-field:focus-within {
   border-color: #767d89;
   outline-color: rgba(255, 255, 255, 0.14);
 }
 
-.search__icon {
+/* Готовность и ошибка видны по самой рамке: подпись под полем объясняет, а
+   рамка отвечает на вопрос «можно ли жать Enter» раньше, чем её прочитают. */
+.rule-field--ready { border-color: rgba(52, 167, 101, 0.5); }
+
+.rule-field--ready:focus-within {
+  border-color: var(--green);
+  outline-color: rgba(52, 167, 101, 0.16);
+}
+
+.rule-field--bad { border-color: rgba(209, 84, 77, 0.45); }
+
+.rule-field--bad:focus-within {
+  border-color: var(--red);
+  outline-color: rgba(209, 84, 77, 0.14);
+}
+
+.rule-field__icon {
   display: block;
   flex-shrink: 0;
   color: var(--text-faint);
 }
 
-.search__input {
+.rule-field__input {
   flex: 1;
   min-width: 0;
   padding: 10px 0;
@@ -338,14 +368,37 @@ body {
   font-size: 14px;
 }
 
-.search__input::placeholder { color: var(--text-faint); }
+.rule-field__input::placeholder { color: var(--text-faint); }
 
-.search__clear {
+.rule-field__type { flex-shrink: 0; }
+
+.rule-field__clear {
   flex-shrink: 0;
   width: 26px;
   height: 26px;
   color: var(--text-faint);
 }
+
+.rule-field__add {
+  flex-shrink: 0;
+  margin: 4px 0;
+  padding: 7px 11px;
+}
+
+/* Подпись под полем: что не так с набранным или что случится по Enter.
+   Место под неё держится всегда — иначе список дёргался бы вверх-вниз на
+   каждый набранный символ. */
+.rule-hint {
+  min-height: 16px;
+  margin: 0 0 8px;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-faint);
+}
+
+.rule-hint--bad { color: #e08a85; }
+.rule-hint--known { color: var(--text-dim); }
 
 /* ─── Строки списков ────────────────────────────────────────────────────── */
 
@@ -478,6 +531,68 @@ body {
   color: #7cd6a0;
   background: rgba(52, 167, 101, 0.12);
   border-color: rgba(52, 167, 101, 0.3);
+}
+
+/* ─── Группы правил ───────────────────────────────────────────────────────
+
+   Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и адрес
+   того же сервера — это одна запись в голове пользователя. Группа появляется
+   от двух правил: одинокая запись под собственным заголовком — это тот же
+   список, только вдвое длиннее. */
+.group { margin-bottom: 12px; }
+
+.group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 6px;
+}
+
+.group__dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--group);
+}
+
+.group__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.group__count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Полоса слева связывает строки в одно целое: одного заголовка мало, когда
+   групп несколько подряд. */
+.group__list {
+  padding-left: 9px;
+  border-left: 2px solid var(--group);
+}
+
+.group--1 { --group: var(--group-1); }
+.group--2 { --group: var(--group-2); }
+.group--3 { --group: var(--group-3); }
+.group--4 { --group: var(--group-4); }
+.group--5 { --group: var(--group-5); }
+.group--6 { --group: var(--group-6); }
+
+/* Правило, которое пользователь как раз набирает в поле. Отметка нужна,
+   чтобы «такое правило уже есть» не осталось словами: видно, какое именно
+   и где оно лежит. */
+.row--match {
+  border-color: #767d89;
+  background: #1a1d23;
+}
+
+.row__note {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 /* ─── Выбор режима ──────────────────────────────────────────────────────── */

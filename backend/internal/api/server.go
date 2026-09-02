@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/rulesource"
 	"github.com/user/amnezia-web-client/internal/version"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
@@ -25,6 +26,11 @@ type Server struct {
 	// Подписчики на поток изменений статуса — см. events.go.
 	eventClients map[*eventClient]bool
 	eventsMu     sync.RWMutex
+
+	// sources определяет, из какого источника правило маршрутизации, —
+	// группировка списка на экране. Держится у сервера, а не создаётся на
+	// запрос, ради кэша ответов DNS.
+	sources *rulesource.Resolver
 }
 
 // NewServer creates a new API server
@@ -35,6 +41,7 @@ func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, autostartMgr *autosta
 		vpnManager:   vpnMgr,
 		autostart:    autostartMgr,
 		eventClients: make(map[*eventClient]bool),
+		sources:      rulesource.New(),
 	}
 
 	s.setupRoutes()
@@ -69,6 +76,11 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/routing/rules", s.handleAddRoutingRule).Methods("POST")
 	api.HandleFunc("/routing/rules/{id}", s.handleDeleteRoutingRule).Methods("DELETE")
 	api.HandleFunc("/routing/mode", s.handleSetRoutingMode).Methods("PUT")
+
+	// Источники правил: чем правила похожи между собой. Отдельным запросом,
+	// потому что ответ приходит из DNS и может задержаться, а список правил
+	// обязан показаться сразу.
+	api.HandleFunc("/routing/sources", s.handleRoutingSources).Methods("GET")
 
 	// Поток изменений статуса
 	api.HandleFunc("/vpn/events", s.handleEvents).Methods("GET")
@@ -349,6 +361,18 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetRouting(w http.ResponseWriter, r *http.Request) {
 	routing := s.config.GetRouting()
 	jsonResponse(w, routing)
+}
+
+// handleRoutingSources сообщает, к какому источнику относится каждое правило:
+// git.dtel.ru, bitrix.dtel.ru и адрес того же сервера — это одно и то же
+// хозяйство, и в списке они должны стоять вместе.
+//
+// Ответ — только то, что удалось выяснить: правила без источника в нём
+// отсутствуют. Ошибки здесь нет по устройству — не ответивший DNS означает
+// список без группировки, а не отказ показать правила.
+func (s *Server) handleRoutingSources(w http.ResponseWriter, r *http.Request) {
+	routing := s.config.GetRouting()
+	jsonResponse(w, s.sources.Sources(r.Context(), routing.Rules))
 }
 
 func (s *Server) handleSetRouting(w http.ResponseWriter, r *http.Request) {

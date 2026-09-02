@@ -107,6 +107,41 @@ func TestConfigResponsesHideSecrets(t *testing.T) {
 	}
 }
 
+// Список правил на экране группируется по источнику. Имена дают ответ без
+// единого вопроса к DNS, поэтому проверять его можно и без сети.
+func TestRoutingSourcesGroupsByDomain(t *testing.T) {
+	s := newTestServer(t)
+
+	for _, value := range []string{"git.dtel.ru", "bitrix.dtel.ru", "google.com"} {
+		body := `{"type": "domain", "value": "` + value + `"}`
+		if rec := request(t, s, http.MethodPost, "/api/routing/rules", body, nil); rec.Code != http.StatusOK {
+			t.Fatalf("правило %s не добавлено: %d %s", value, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := request(t, s, http.MethodGet, "/api/routing/sources", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("источники не отданы: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var sources map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &sources); err != nil {
+		t.Fatalf("ответ не разобран: %v", err)
+	}
+
+	counts := map[string]int{}
+	for _, src := range sources {
+		counts[src]++
+	}
+
+	if counts["dtel.ru"] != 2 {
+		t.Errorf("поддомены не сошлись в одну группу: %v", sources)
+	}
+	if counts["google.com"] != 1 {
+		t.Errorf("чужое имя попало не в свою группу: %v", sources)
+	}
+}
+
 // Правила приходят и из интерфейса, и файлом от пользователя: непригодное
 // значение обязано быть отвергнуто, а не уехать в таблицу маршрутизации.
 func TestRoutingValidationOnHTTP(t *testing.T) {

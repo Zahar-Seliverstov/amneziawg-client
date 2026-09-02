@@ -51,52 +51,98 @@
       </label>
     </div>
 
-    <!-- Поиск нужен, только когда правил столько, что глазами уже не найти -->
-    <div v-if="(routing?.rules?.length || 0) > 4" class="search">
-      <svg class="search__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round">
+    <!-- Одно поле на поиск и на добавление: пока набранное не складывается в
+         правило, оно ищет по списку; сложилось — рядом появляется «Добавить».
+         Вид правила виден по самому значению, выбирать его руками не нужно. -->
+    <div
+      class="rule-field"
+      :class="{
+        'rule-field--bad': draft.kind === 'invalid',
+        'rule-field--ready': draft.kind === 'ready' && !existing
+      }"
+    >
+      <svg class="rule-field__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round">
         <circle cx="10.5" cy="10.5" r="6.5" />
         <path d="M20 20l-4.6-4.6" />
       </svg>
 
-      <input v-model="search" type="text" class="search__input" placeholder="Поиск по правилам" />
+      <input
+        v-model="input"
+        type="text"
+        class="rule-field__input"
+        placeholder="Адрес, подсеть, домен или зона"
+        aria-label="Поиск по правилам и добавление нового"
+        spellcheck="false"
+        autocapitalize="off"
+        autocomplete="off"
+        @keyup.enter="addRule"
+        @keyup.esc="input = ''"
+      />
 
-      <button v-if="search" class="icon-btn search__clear" aria-label="Очистить поиск" @click="search = ''">
+      <span v-if="draft.kind === 'ready'" class="tag rule-field__type">{{ ruleTypeLabel(draft.type!) }}</span>
+
+      <button v-if="input" class="icon-btn rule-field__clear" aria-label="Очистить" @click="input = ''">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor">
           <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 12.1-1.4 1.4L12 13.4l-2.1 2.1-1.4-1.4L10.6 12 8.5 9.9l1.4-1.4L12 10.6l2.1-2.1 1.4 1.4L13.4 12z" />
         </svg>
       </button>
-    </div>
 
-    <!-- Добавление правила — над списком: список бывает длинным -->
-    <div class="add-rule">
-      <SelectMenu v-model="newType" :options="ruleTypes" class="add-rule__type" />
-      <input
-        v-model="newValue"
-        type="text"
-        class="input"
-        :placeholder="placeholder"
-        @keyup.enter="addRule"
-      />
-      <button class="btn btn--accent" @click="addRule">
+      <button
+        v-if="draft.kind === 'ready' && !existing"
+        class="btn btn--accent rule-field__add"
+        :disabled="adding"
+        @click="addRule"
+      >
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
         Добавить
       </button>
     </div>
 
-    <ul v-if="visibleRules.length" class="list list--tight">
-      <li v-for="rule in visibleRules" :key="rule.id" class="row">
-        <span class="tag">{{ typeLabel(rule.type) }}</span>
-        <span class="row__value">{{ rule.value }}</span>
-        <button class="icon-btn icon-btn--danger" aria-label="Удалить" @click="deleteRule(rule.id)">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </li>
+    <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
+
+    <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
+         адрес того же сервера — это одна запись в голове пользователя. -->
+    <div
+      v-for="group in visibleGroups"
+      :key="group.source"
+      class="group"
+      :class="`group--${group.color}`"
+    >
+      <div class="group__head">
+        <span class="group__dot" aria-hidden="true"></span>
+        <span class="group__name">{{ group.source }}</span>
+        <span class="group__count">
+          {{ group.visible.length === group.rules.length
+            ? group.rules.length
+            : `${group.visible.length} из ${group.rules.length}` }}
+        </span>
+      </div>
+
+      <ul class="list list--tight group__list">
+        <RuleRow
+          v-for="rule in group.visible"
+          :key="rule.id"
+          :rule="rule"
+          :matched="rule.id === existing?.id"
+          @delete="deleteRule"
+        />
+      </ul>
+    </div>
+
+    <ul v-if="visibleLoose.length" class="list list--tight">
+      <RuleRow
+        v-for="rule in visibleLoose"
+        :key="rule.id"
+        :rule="rule"
+        :matched="rule.id === existing?.id"
+        @delete="deleteRule"
+      />
     </ul>
 
-    <p v-else class="muted">
-      {{ routing?.rules?.length ? 'Ничего не найдено' : 'Правил нет' }}
+    <p v-if="!visibleGroups.length && !visibleLoose.length" class="muted">
+      {{ rules.length
+        ? 'Ничего не найдено'
+        : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
     </p>
   </section>
 </template>
@@ -104,7 +150,7 @@
 <script setup lang="ts">
 import type { RoutingConfig, RoutingMode } from '~/composables/useApi'
 
-// Правила маршрутизации: режим, поиск, добавление и список.
+// Правила маршрутизации: режим, поле поиска-добавления и список.
 //
 // Панель самодостаточна — правила больше нигде на странице не нужны, поэтому
 // и читает, и меняет их она сама. Наверх уходят только сообщения
@@ -119,51 +165,83 @@ const api = useApi()
 
 const routing = ref<RoutingConfig | null>(null)
 
+// Источник каждого правила приходит вторым запросом: ответ считается по DNS и
+// может задержаться, а список обязан показаться сразу. Пока его нет — список
+// просто не сгруппирован.
+const sources = ref<Record<string, string>>({})
+
+const input = ref('')
+const adding = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+
 const modes = [
   { value: 'vpn_list' as RoutingMode, title: 'Только список через VPN', note: 'Остальное идёт напрямую' },
   { value: 'direct_list' as RoutingMode, title: 'Всё через VPN, кроме списка', note: 'Список идёт напрямую' }
 ]
 
-const ruleTypes = [
-  { value: 'ip', label: 'IP' },
-  { value: 'cidr', label: 'CIDR' },
-  { value: 'domain', label: 'Домен' },
-  { value: 'zone', label: 'Зона' }
-]
+const rules = computed(() => routing.value?.rules || [])
 
-const examples: Record<string, string> = {
-  ip: '1.1.1.1',
-  cidr: '10.0.0.0/8',
-  domain: 'google.com',
-  zone: '.ru'
-}
+const draft = computed(() => parseRule(input.value))
 
-const search = ref('')
-const newType = ref('ip')
-const newValue = ref('')
-const fileInput = ref<HTMLInputElement | null>(null)
-
-const placeholder = computed(() => examples[newType.value] || '')
-
-function typeLabel(type: string) {
-  return ruleTypes.find(t => t.value === type)?.label || type
-}
-
-const visibleRules = computed(() => {
-  const rules = routing.value?.rules || []
-  const q = search.value.trim().toLowerCase()
-  if (!q) return rules
-
-  return rules.filter(
-    r => r.value.toLowerCase().includes(q) || typeLabel(r.type).toLowerCase().includes(q)
-  )
+// Уже добавленное правило с тем же значением. Сравниваем по приведённому
+// виду: «DTEL.RU» и «dtel.ru» — одно и то же, и предлагать добавить второе
+// такое же нельзя.
+const existing = computed(() => {
+  if (draft.value.kind !== 'ready') return null
+  return rules.value.find(r => r.value.trim().toLowerCase() === draft.value.value) || null
 })
+
+const hint = computed(() => {
+  if (draft.value.kind === 'invalid') return draft.value.reason
+  if (existing.value) return 'Такое правило уже есть — оно отмечено в списке'
+  if (draft.value.kind === 'ready') return 'Enter или «Добавить»'
+  return ''
+})
+
+const hintClass = computed(() => {
+  if (draft.value.kind === 'invalid') return 'rule-hint--bad'
+  if (existing.value) return 'rule-hint--known'
+  return ''
+})
+
+const { groups, loose } = useRuleGroups(rules, sources)
+
+// Поиск идёт по набранному тексту как есть: набрано правило целиком — в
+// списке останется оно само, набрано «dtel» — всё хозяйство.
+function matches(rule: { type: string; value: string }) {
+  const q = input.value.trim().toLowerCase()
+  if (!q) return true
+  return rule.value.toLowerCase().includes(q) || ruleTypeLabel(rule.type).toLowerCase().includes(q)
+}
+
+// Группа остаётся на месте, даже если под фильтр попало одно её правило:
+// иначе по найденной записи не понять, к чему она относится.
+const visibleGroups = computed(() =>
+  groups.value
+    .map(group => ({ ...group, visible: group.rules.filter(matches) }))
+    .filter(group => group.visible.length > 0)
+)
+
+const visibleLoose = computed(() => loose.value.filter(matches))
 
 async function load() {
   try {
     routing.value = await api.getRouting()
   } catch (e: any) {
     emit('notify', e.message)
+    return
+  }
+
+  loadSources()
+}
+
+// Источники подтягиваются отдельно и молча: не ответивший DNS означает список
+// без группировки, а не повод ругаться на пользователя.
+async function loadSources() {
+  try {
+    sources.value = await api.getRoutingSources()
+  } catch (e) {
+    console.error('Не удалось определить источники правил:', e)
   }
 }
 
@@ -177,24 +255,27 @@ async function setMode(mode: RoutingMode) {
 }
 
 async function addRule() {
-  if (!newValue.value) return
+  if (draft.value.kind !== 'ready' || existing.value || adding.value) return
 
-  const value = newValue.value
+  const { type, value } = draft.value
+  adding.value = true
 
   try {
-    await api.addRoutingRule(newType.value, value)
+    await api.addRoutingRule(type!, value!)
     // Поле очищаем только после согласия службы: отвергнутое значение чаще
     // всего надо поправить, а не набирать заново.
-    newValue.value = ''
+    input.value = ''
     await load()
     emit('notify', `Добавлено: ${value}`, 'ok')
   } catch (e: any) {
     emit('notify', e.message)
+  } finally {
+    adding.value = false
   }
 }
 
 async function deleteRule(id: string) {
-  const value = routing.value?.rules?.find(r => r.id === id)?.value || ''
+  const value = rules.value.find(r => r.id === id)?.value || ''
 
   try {
     await api.deleteRoutingRule(id)
@@ -228,12 +309,12 @@ function pickFile() {
 }
 
 async function onFile(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0]
 
   // Значение сбрасываем сразу: иначе повторный выбор того же файла не
   // считается изменением и обработчик не вызывается вовсе.
-  input.value = ''
+  target.value = ''
   if (!file) return
 
   try {
@@ -244,9 +325,9 @@ async function onFile(e: Event) {
     }
 
     await api.setRouting({ mode: data.mode, rules: data.rules })
-    // Поиск сбрасываем: иначе загруженные правила остались бы за фильтром,
+    // Поле сбрасываем: иначе загруженные правила остались бы за фильтром,
     // набранным до загрузки.
-    search.value = ''
+    input.value = ''
     await load()
     emit('notify', `Загружено правил: ${data.rules.length}`, 'ok')
   } catch (err: any) {
