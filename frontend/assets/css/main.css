@@ -319,6 +319,11 @@ body {
   display: flex;
   align-items: center;
   gap: 9px;
+  /* Высота задана явно и не зависит от того, что внутри: без этого поле
+     подрастало на пару пикселей ровно в тот момент, когда набранное
+     складывалось в правило и справа появлялась кнопка. Список под полем
+     дёргался на каждый такой переход. */
+  min-height: 39px;
   padding: 0 5px 0 12px;
   margin-bottom: 8px;
   background: var(--sunken);
@@ -359,7 +364,8 @@ body {
 .rule-field__input {
   flex: 1;
   min-width: 0;
-  padding: 10px 0;
+  padding: 0;
+  line-height: 37px;
   background: none;
   border: none;
   outline: none;
@@ -379,10 +385,11 @@ body {
   color: var(--text-faint);
 }
 
+/* Кнопка ниже поля и не тянет его вверх: высоту держит само поле. */
 .rule-field__add {
   flex-shrink: 0;
-  margin: 4px 0;
-  padding: 7px 11px;
+  height: 29px;
+  padding: 0 12px;
 }
 
 /* Подпись под полем: что не так с набранным или что случится по Enter.
