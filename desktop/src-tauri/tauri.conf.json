@@ -5,7 +5,10 @@
   "version": "1.1.0",
   "identifier": "org.amnezia.awgclient",
   "build": {
-    "frontendDist": "../splash"
+    "beforeDevCommand": "npm --prefix ../frontend run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm --prefix ../frontend run generate",
+    "frontendDist": "../../frontend/.output/public"
   },
   "app": {
     "windows": [
@@ -23,26 +26,31 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb",
+      "appimage"
+    ],
     "category": "Utility",
     "shortDescription": "Клиент AmneziaWG",
-    "longDescription": "Десктопная оболочка веб-клиента AmneziaWG: окно поверх локального backend'а, который поднимается с правами root через polkit.",
+    "longDescription": "Десктопный клиент AmneziaWG: окно с интерфейсом и служба, которая поднимается с правами root через polkit и управляет туннелем.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/128x128@2x.png"
     ],
-    "externalBin": ["binaries/awg-client"],
+    "externalBin": [
+      "binaries/awg-client"
+    ],
     "linux": {
       "deb": {
-        "depends": ["polkit"]
+        "depends": [
+          "polkit"
+        ]
       }
     }
   }

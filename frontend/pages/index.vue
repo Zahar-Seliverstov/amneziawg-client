@@ -329,7 +329,7 @@
 import type { AmneziaConfig, RoutingConfig, RoutingMode } from '~/composables/useApi'
 
 const api = useApi()
-const { status: wsStatus } = useWebSocket()
+const { status: wsStatus } = useVpnStatus()
 
 const configs = ref<AmneziaConfig[]>([])
 const routingConfig = ref<RoutingConfig | null>(null)

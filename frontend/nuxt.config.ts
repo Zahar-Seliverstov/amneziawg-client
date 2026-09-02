@@ -12,22 +12,13 @@ export default defineNuxtConfig({
     appManifest: false
   },
   
-  // Адрес backend'а нужен только в разработке: собранный интерфейс раздаёт
-  // сам backend, и там его адрес совпадает с адресом страницы (см.
-  // composables/useBackend.ts). Переопределяется через NUXT_PUBLIC_BACKEND_ORIGIN.
-  runtimeConfig: {
-    public: {
-      backendOrigin: 'http://127.0.0.1:8081',
-      // Токен доступа для разработки: страницу отдаёт сервер Nuxt, cookie
-      // ему никто не выдавал. Подставляется через NUXT_PUBLIC_BACKEND_TOKEN
-      // (это делает start.sh). В рабочем режиме пусто — работает cookie.
-      backendToken: ''
-    }
-  },
-  
+  // Интерфейс живёт внутри десктопной оболочки и работает без сервера:
+  // страницы отдаёт сам Tauri из бандла, а данные приходят через его команды.
+  ssr: false,
+
   app: {
     head: {
-      title: 'AWG Client - AmneziaWG Web Client',
+      title: 'AWG Client',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' }

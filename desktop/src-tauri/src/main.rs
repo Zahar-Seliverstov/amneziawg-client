@@ -1,13 +1,18 @@
-// Десктопная оболочка AmneziaWG Web Client.
+// Десктопная оболочка AmneziaWG Client.
 //
-// Задача осознанно минимальна: поднять backend с правами root через polkit и
-// показать в окне тот же самый веб-интерфейс, что и в браузере. Frontend при
-// этом не меняется — backend раздаёт собранный UI на своём порту, поэтому
-// window.location.hostname внутри страницы указывает ровно туда, куда
-// composables и ждут (127.0.0.1:8081).
+// Задача осознанно минимальна: поднять службу с правами root через polkit и
+// показать интерфейс. Интерфейс лежит в самом приложении и открывается сразу,
+// не дожидаясь службы: пока идёт запуск, он показывает экран ожидания.
+//
+// Со службой говорит только оболочка — по unix-сокету с правами 0600
+// (см. api.rs). Окну сокет недоступен, поэтому запросы к API идут через
+// команду api_request (commands.rs), а изменения статуса — событиями
+// (events.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod commands;
+mod events;
 mod tray;
 
 use std::io;
@@ -17,9 +22,14 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, Url, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
-/// Сколько ждём backend. Запас большой: пользователь ещё вводит пароль в
+use commands::{Boot, BootState};
+
+/// Событие о том, чем кончился запуск службы.
+const BOOT_EVENT: &str = "backend:boot";
+
+/// Сколько ждём службу. Запас большой: пользователь ещё вводит пароль в
 /// диалоге polkit.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -71,25 +81,38 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn config_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let dir = home.join(".config/awg-client");
-
-    // Каталог создаём от пользователя: иначе его создаст root, и запуск
-    // из терминала (./start.sh) потом упрётся в чужие права.
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-
-    dir.join("config.json")
+    user_dir(
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(".config/awg-client"),
+    )
+    .join("config.json")
 }
 
-/// Запускаем backend от root. pkexec сам покажет системный диалог, а на
+/// Каталог сокета создаём заранее и от имени пользователя: служба работает от
+/// root, и созданный ею каталог остался бы принадлежать root — со всеми
+/// последствиями для следующего запуска из терминала.
+fn socket_path() -> PathBuf {
+    let path = api::socket_path();
+    if let Some(dir) = path.parent() {
+        user_dir(dir.to_path_buf());
+    }
+    path
+}
+
+fn user_dir(dir: PathBuf) -> PathBuf {
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    dir
+}
+
+/// Запускаем службу от root. pkexec сам покажет системный диалог, а на
 /// машине без polkit пробуем запустить напрямую — этого хватает, если
 /// оболочку уже запустили с правами root.
-///
-/// Файл с токеном доступа backend пишет до того, как начинает слушать порт,
-/// поэтому к моменту, когда порт откликнулся, токен уже на месте.
 fn spawn_backend(bin: &Path) -> io::Result<Child> {
     let config = config_path();
+    let socket = socket_path();
     let parent_pid = std::process::id().to_string();
     // Путь к самой оболочке: backend прописывает его в ярлык автозапуска,
     // когда переключатель включают из настроек в окне.
@@ -98,14 +121,12 @@ fn spawn_backend(bin: &Path) -> io::Result<Child> {
         .unwrap_or_default();
 
     let args = |cmd: &mut Command| {
-        cmd.arg("-host")
-            .arg("127.0.0.1")
-            .arg("-port")
-            .arg(api::PORT.to_string())
+        cmd.arg("-socket")
+            .arg(&socket)
             .arg("-config")
             .arg(&config)
-            // Backend работает от root, и убить его от имени пользователя уже
-            // нельзя — поэтому он сам следит за оболочкой и гасится вместе с
+            // Служба работает от root, и убить её от имени пользователя уже
+            // нельзя — поэтому она сама следит за оболочкой и гасится вместе с
             // ней, корректно разбирая VPN-соединение.
             .arg("-parent-pid")
             .arg(&parent_pid)
@@ -131,9 +152,12 @@ fn spawn_backend(bin: &Path) -> io::Result<Child> {
     }
 }
 
-/// Поднимаем backend и ждём, пока он реально начнёт отвечать.
+/// Поднимаем службу и ждём, пока она реально начнёт отвечать.
 fn ensure_backend(app: &tauri::AppHandle) -> Result<(), String> {
-    if api::is_up() {
+    // Готовность, а не «файл сокета есть»: см. api::is_ready. Имя сокета
+    // переживает смерть процесса, и проверка по наличию файла пропускала бы
+    // вперёд службу, которой уже нет.
+    if api::is_ready() {
         return Ok(());
     }
 
@@ -145,14 +169,14 @@ fn ensure_backend(app: &tauri::AppHandle) -> Result<(), String> {
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
-        if api::is_up() {
+        if api::is_ready() {
             return Ok(());
         }
 
-        // pkexec завершился раньше, чем поднялся порт: отказ в авторизации
-        // или падение самого backend'а.
+        // pkexec завершился раньше, чем открылся сокет: отказ в авторизации
+        // или падение самой службы.
         match child.try_wait() {
-            Ok(Some(status)) if !api::is_up() => {
+            Ok(Some(status)) if !api::is_ready() => {
                 return Err(match status.code() {
                     Some(126) => "Запуск не подтверждён в диалоге polkit.".to_string(),
                     Some(127) => "polkit отказал в правах администратора.".to_string(),
@@ -171,24 +195,6 @@ fn ensure_backend(app: &tauri::AppHandle) -> Result<(), String> {
 
         thread::sleep(Duration::from_millis(150));
     }
-}
-
-/// Экранирование для передачи текста в JS без зависимости от serde.
-fn js_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Запуск в фоне: показываем только значок в трее (автозапуск при входе).
@@ -235,6 +241,11 @@ fn main() {
     tune_environment();
 
     tauri::Builder::default()
+        .manage(Boot::new())
+        .invoke_handler(tauri::generate_handler![
+            commands::api_request,
+            commands::backend_state
+        ])
         // Второй запуск (из меню, пока окно свёрнуто в трей) не плодит окно,
         // а показывает уже работающее.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -259,7 +270,7 @@ fn main() {
             }
 
             // Окно объявлено скрытым: так автозапуск не мигает им при входе,
-            // а обычный запуск показывает его сразу со сплэшем.
+            // а обычный запуск показывает его сразу — с экраном запуска.
             if !started_hidden() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
@@ -274,29 +285,21 @@ fn main() {
                 }
             }
 
-            // Отдельный поток: окно со сплэшем должно отрисоваться сразу,
-            // пока пользователь возится с диалогом polkit.
+            // Отдельный поток: окно должно отрисоваться сразу и показать
+            // экран ожидания, пока пользователь возится с диалогом polkit.
             thread::spawn(move || {
-                let result = ensure_backend(&handle);
-                let Some(window) = handle.get_webview_window("main") else {
-                    return;
+                let state = match ensure_backend(&handle) {
+                    Ok(()) => BootState::Ready,
+                    Err(message) => BootState::Failed { message },
                 };
 
-                match result {
-                    Ok(()) => match Url::parse(&api::url_with_token()) {
-                        Ok(url) => {
-                            if let Err(e) = window.navigate(url) {
-                                let _ =
-                                    window.eval(format!("window.awgError({})", js_string(&e.to_string())));
-                            }
-                        }
-                        Err(e) => {
-                            let _ = window.eval(format!("window.awgError({})", js_string(&e.to_string())));
-                        }
-                    },
-                    Err(message) => {
-                        let _ = window.eval(format!("window.awgError({})", js_string(&message)));
-                    }
+                // Состояние сохраняем ДО события: интерфейс мог ещё не
+                // подписаться и спросит его сам при монтировании.
+                handle.state::<Boot>().set(state.clone());
+                let _ = handle.emit(BOOT_EVENT, state.clone());
+
+                if matches!(state, BootState::Ready) {
+                    events::watch(handle.clone());
                 }
             });
 

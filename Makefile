@@ -1,4 +1,4 @@
-.PHONY: all build build-backend build-frontend embed-ui dev-backend dev-frontend \
+.PHONY: all build build-frontend frontend-deps dev-backend dev-frontend \
         desktop desktop-dev desktop-run desktop-install desktop-uninstall \
         desktop-nopasswd desktop-nopasswd-off clean
 
@@ -21,21 +21,20 @@ TARGET_TRIPLE := $(shell rustc -Vv 2>/dev/null | awk '/^host:/{print $$2}')
 
 all: build
 
-# Полная сборка: UI -> вшивается в backend -> готовый бинарник
-build: build-frontend embed-ui build-backend
-
-build-backend:
+# Служба. Интерфейс в неё больше не вшивается: он лежит в бандле оболочки,
+# а служба отдаёт только API — по unix-сокету.
+build:
 	cd backend && make build
 
-build-frontend:
-	cd frontend && npm install --no-fund --no-audit && npm run generate
+# Зависимости интерфейса. Собирает его сам Tauri (beforeBuild/beforeDevCommand),
+# но зависимости к этому моменту уже должны стоять.
+frontend-deps:
+	cd frontend && npm install --no-fund --no-audit
 
-# Кладём собранный UI туда, откуда его забирает go:embed
-embed-ui:
-	rm -rf backend/internal/web/dist
-	mkdir -p backend/internal/web/dist
-	cp -a frontend/.output/public/. backend/internal/web/dist/
-	touch backend/internal/web/dist/.gitkeep
+# Отдельная сборка интерфейса — там, где оболочку не собирают: проверить, что
+# UI вообще строится.
+build-frontend: frontend-deps
+	cd frontend && npm run generate
 
 # Development mode
 dev-backend:
@@ -51,14 +50,15 @@ dev-frontend:
 # APPIMAGE_EXTRACT_AND_RUN — linuxdeploy сам является AppImage и без fuse2
 # не монтируется; NO_STRIP — его strip не понимает секцию .relr.dyn в
 # современных системных библиотеках.
-desktop: build
+desktop: build frontend-deps
 	mkdir -p desktop/src-tauri/binaries
 	cp backend/build/awg-client desktop/src-tauri/binaries/awg-client-$(TARGET_TRIPLE)
 	cd desktop && npm install --no-fund --no-audit && \
 		APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 npm run build
 
-# Запуск оболочки без упаковки (пересобирает backend, UI берётся вшитый)
-desktop-dev: build
+# Запуск оболочки без упаковки (пересобирает службу, интерфейс поднимает Nuxt
+# в режиме разработки — его адрес прописан в tauri.conf.json)
+desktop-dev: build frontend-deps
 	mkdir -p desktop/src-tauri/binaries
 	cp backend/build/awg-client desktop/src-tauri/binaries/awg-client-$(TARGET_TRIPLE)
 	cd desktop && npm install --no-fund --no-audit && npm run dev
@@ -110,4 +110,3 @@ clean:
 	cd backend && make clean
 	rm -rf frontend/.nuxt frontend/.output frontend/node_modules
 	rm -rf desktop/node_modules desktop/src-tauri/target desktop/src-tauri/binaries/awg-client-*
-	find backend/internal/web/dist -mindepth 1 ! -name .gitkeep -delete

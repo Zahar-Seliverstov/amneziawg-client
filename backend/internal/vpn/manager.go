@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
 	"github.com/user/amnezia-web-client/internal/firewall"
+	"github.com/user/amnezia-web-client/internal/iproute"
 	"github.com/user/amnezia-web-client/internal/routing"
 )
 
@@ -110,6 +110,11 @@ type Manager struct {
 	// dns подменяет системные серверы имён на время соединения.
 	dns dnsControl
 
+	// ip — команда iproute2 за интерфейсом: адреса, маршруты и опрос таблицы
+	// маршрутизации. Поле, а не прямые вызовы exec, — иначе решения о
+	// маршрутах можно было бы проверить только от root на живой машине.
+	ip iproute.Tool
+
 	// ipToolErr — почему недоступна команда ip. Ею ставятся адреса и
 	// маршруты, и без неё туннель поднимется, но трафик в него не пойдёт.
 	ipToolErr error
@@ -146,6 +151,7 @@ func NewManager() *Manager {
 			State: StateDisconnected,
 		},
 		interfaceName:   "awg0",
+		ip:              iproute.New(),
 		statusCallbacks: []StatusCallback{},
 		notify:          make(chan ConnectionStatus, statusQueue),
 		reconnectMin:    reconnectMinDelay,
@@ -155,9 +161,9 @@ func NewManager() *Manager {
 	// Адреса и маршруты ставятся командой ip. Без неё туннель поднимется, а
 	// трафик в него не пойдёт — раньше это выражалось серией предупреждений
 	// в журнале при состоянии «Подключено».
-	if _, err := exec.LookPath("ip"); err != nil {
-		m.ipToolErr = fmt.Errorf("не найдена команда ip из пакета iproute2: %w", err)
-		log.Printf("ВНИМАНИЕ: %v. Подключение работать не будет", m.ipToolErr)
+	if err := iproute.Available(); err != nil {
+		m.ipToolErr = err
+		log.Printf("ВНИМАНИЕ: %v. Подключение работать не будет", err)
 	}
 
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
@@ -191,8 +197,8 @@ func (m *Manager) OnStatusChange(callback StatusCallback) {
 
 // notifyStatusChange ставит текущее состояние в очередь на рассылку.
 //
-// Постановка в очередь, а не прямой вызов: подписчик пишет в WebSocket, и
-// зависший клиент задерживал бы сам туннель на время таймаута записи.
+// Постановка в очередь, а не прямой вызов: подписчик пишет в открытый поток
+// событий, и не читающий его клиент задерживал бы сам туннель.
 func (m *Manager) notifyStatusChange() {
 	select {
 	case m.notify <- m.GetStatus():
@@ -671,7 +677,7 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 	ifname := m.ifname()
 
 	for _, addr := range cfg.Interface.Address {
-		if err := runCmd("ip", "address", "add", addr, "dev", ifname); err != nil {
+		if err := m.ip.AddAddress(addr, ifname); err != nil {
 			// Отдельный адрес мог не лечь по безобидной причине — например,
 			// он уже назначен. Итог проверяем по состоянию интерфейса ниже.
 			log.Printf("Не удалось назначить адрес %s: %v", addr, err)
@@ -679,7 +685,7 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 	}
 
 	// MTU задан при создании TUN, дублировать командой не нужно.
-	if err := runCmd("ip", "link", "set", ifname, "up"); err != nil {
+	if err := m.ip.LinkUp(ifname); err != nil {
 		return fmt.Errorf("не удалось поднять интерфейс: %w", err)
 	}
 
@@ -690,7 +696,7 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 	//
 	// Спрашиваем систему, а не считаем удачные вызовы: адрес мог быть уже
 	// назначен, и тогда ошибка команды означает успех.
-	if !interfaceHasAddress(ifname) {
+	if !m.interfaceHasAddress(ifname) {
 		return fmt.Errorf("интерфейсу %s не назначен ни один адрес — проверьте Address в конфигурации", ifname)
 	}
 
@@ -700,15 +706,15 @@ func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
 // interfaceHasAddress сообщает, есть ли у интерфейса адрес, пригодный для
 // отправки. Локальные адреса канала (scope link) не в счёт: они появляются
 // сами и ничего не значат.
-func interfaceHasAddress(ifname string) bool {
-	output, err := exec.Command("ip", "-o", "address", "show", "dev", ifname, "scope", "global").Output()
+func (m *Manager) interfaceHasAddress(ifname string) bool {
+	has, err := m.ip.HasGlobalAddress(ifname)
 	if err != nil {
 		// Не смогли спросить — не наказываем: настоящую причину увидим
 		// дальше, когда трафик не пойдёт.
 		log.Printf("Не удалось проверить адреса интерфейса %s: %v", ifname, err)
 		return true
 	}
-	return len(strings.TrimSpace(string(output))) > 0
+	return has
 }
 
 // configureTraffic перенаправляет трафик в туннель и переключает DNS.
@@ -888,7 +894,7 @@ func hexEncodeKey(base64Key string) string {
 // Уже существующие чужие маршруты (RTNETLINK "File exists") не запоминаются,
 // поэтому при пересборке мы их не удалим. Вызывать под routeMu.
 func (m *Manager) addRoute(args ...string) error {
-	if err := runCmd("ip", append([]string{"route", "add"}, args...)...); err != nil {
+	if err := m.ip.AddRoute(args...); err != nil {
 		return err
 	}
 
@@ -900,7 +906,7 @@ func (m *Manager) addRoute(args ...string) error {
 // Вызывать под routeMu.
 func (m *Manager) flushRoutes() {
 	for i := len(m.installedRoutes) - 1; i >= 0; i-- {
-		runCmd("ip", append([]string{"route", "del"}, m.installedRoutes[i]...)...)
+		m.ip.DelRoute(m.installedRoutes[i]...)
 	}
 	m.installedRoutes = nil
 }
@@ -1012,18 +1018,12 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 				continue
 			}
 
-			// Эти адреса должны идти в обход VPN, через обычный шлюз.
-			// Шлюз подбирается по версии IP: направить IPv6-адрес через
-			// IPv4-шлюз нельзя, ядро такой маршрут отвергает.
-			for _, ip := range ips {
-				gateway, err := m.gatewayFor(ip)
-				if err != nil {
-					log.Printf("Skipping bypass route %s: %v", ip, err)
-					continue
-				}
-
-				if err := m.addRoute(ip, "via", gateway); err != nil {
-					log.Printf("Warning: failed to add bypass route %s: %v", ip, err)
+			// Эти адреса должны идти мимо туннеля — тем путём, каким система
+			// шла к ним до подключения. Каким именно, решает bypassRoute:
+			// шлюз по умолчанию тут не годится, см. bypass.go.
+			for _, prefix := range ips {
+				if err := m.addBypassRoute(prefix); err != nil {
+					log.Printf("Исключение %s не выведено мимо туннеля: %v", prefix, err)
 				}
 			}
 		}
@@ -1111,14 +1111,42 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 		// которой соединение не поднималось вовсе.
 		excluded := 0
 		for _, addr := range addrs {
-			prefix := hostPrefix(addr)
-
-			gateway, err := m.gatewayFor(prefix)
+			// Закрепляем ТОТ ЖЕ путь, которым система идёт к серверу сейчас:
+			// через шлюз, по линку или вовсе через другой туннель. Шлюз по
+			// умолчанию, который брался здесь раньше, — лишь частный случай,
+			// и для сервера, доступного иначе, он уводил пакеты в никуда.
+			path, err := m.ip.PathTo(addr.String())
 			if err != nil {
 				log.Printf("Адрес сервера %s не исключён: %v", addr, err)
 				continue
 			}
-			if err := m.addRoute(prefix, "via", gateway); err != nil {
+
+			// Адрес самой машины: локальная таблица просматривается раньше
+			// всех, туннель до него не доберётся и без исключения.
+			if path.Local {
+				excluded++
+				continue
+			}
+
+			// Путь уже ведёт в туннель — это петля, и закреплять её нельзя.
+			if path.Device == ifname {
+				log.Printf("Адрес сервера %s не исключён: путь к нему ведёт в сам туннель", addr)
+				continue
+			}
+
+			if err := m.addRoute(path.RouteArgs(hostPrefix(addr))...); err != nil {
+				// Маршрут мог уже существовать: его оставил аварийно
+				// завершившийся прошлый запуск или другой клиент к тому же
+				// серверу. Отказываться из-за этого нельзя — важно не кто
+				// поставил маршрут, а что адрес сервера пришпилен мимо
+				// туннеля. Раньше такой маршрут валил настройку целиком, и
+				// клиент оставался подключённым, но без единого маршрута.
+				if m.pinnedOutsideTunnel(hostPrefix(addr)) {
+					log.Printf("Адрес сервера %s уже выведен мимо туннеля чужим маршрутом — оставляем как есть", addr)
+					excluded++
+					continue
+				}
+
 				log.Printf("Адрес сервера %s не исключён: %v", addr, err)
 				continue
 			}
@@ -1192,64 +1220,6 @@ func hasIPv6Address(addresses []string) bool {
 		}
 	}
 	return false
-}
-
-// getDefaultGateway returns the default IPv4 gateway.
-func (m *Manager) getDefaultGateway() (string, error) {
-	return defaultGateway("-4")
-}
-
-// getDefaultGatewayV6 returns the default IPv6 gateway.
-func (m *Manager) getDefaultGatewayV6() (string, error) {
-	return defaultGateway("-6")
-}
-
-// defaultGateway разбирает вывод "ip <family> route show default".
-func defaultGateway(family string) (string, error) {
-	output, err := exec.Command("ip", family, "route", "show", "default").Output()
-	if err != nil {
-		return "", err
-	}
-
-	// Строка вида: "default via 192.168.1.1 dev eth0 ..."
-	fields := strings.Fields(string(output))
-	for i, f := range fields {
-		if f == "via" && i+1 < len(fields) {
-			return fields[i+1], nil
-		}
-	}
-
-	return "", fmt.Errorf("no default %s gateway found", strings.TrimPrefix(family, "-"))
-}
-
-// gatewayFor подбирает шлюз по умолчанию той же версии IP, что и адрес
-// назначения. Если подходящего шлюза нет (например, IPv6 в сети отсутствует),
-// возвращает ошибку — такой маршрут просто пропускается.
-func (m *Manager) gatewayFor(dest string) (string, error) {
-	if isIPv6Dest(dest) {
-		gw, err := m.getDefaultGatewayV6()
-		if err != nil {
-			return "", fmt.Errorf("no IPv6 gateway available: %w", err)
-		}
-		return gw, nil
-	}
-
-	return m.getDefaultGateway()
-}
-
-// isIPv6Dest определяет версию адреса назначения (принимает и IP, и CIDR).
-func isIPv6Dest(dest string) bool {
-	dest = strings.TrimSpace(dest)
-
-	if ip, _, err := net.ParseCIDR(dest); err == nil {
-		return ip.To4() == nil
-	}
-
-	if ip := net.ParseIP(dest); ip != nil {
-		return ip.To4() == nil
-	}
-
-	return strings.Contains(dest, ":")
 }
 
 // Disconnect stops the VPN connection
@@ -1383,14 +1353,4 @@ func (m *Manager) setError(err error) {
 	m.mu.Unlock()
 
 	m.notifyStatusChange()
-}
-
-// runCmd runs a command and returns error if it fails
-func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %v failed: %w: %s", name, args, err, string(output))
-	}
-	return nil
 }

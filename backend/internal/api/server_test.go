@@ -21,9 +21,6 @@ func request(t *testing.T, s *Server, method, path, body string, headers map[str
 
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
-	// Токен по умолчанию: проверки самой аутентификации живут отдельно, в
-	// auth_test.go, а остальным тестам она только мешала бы.
-	req.Header.Set("Authorization", "Bearer "+s.token.Value())
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -33,56 +30,6 @@ func request(t *testing.T, s *Server, method, path, body string, headers map[str
 	return rec
 }
 
-// Чужой сайт не должен ни читать конфигурации (в них приватные ключи), ни
-// управлять подключением.
-func TestForeignOriginIsRejected(t *testing.T) {
-	s := newTestServer(t, config.AmneziaWGConfig{ID: "c1", Name: "тест"})
-
-	rec := request(t, s, http.MethodGet, "/api/configs", "", map[string]string{
-		"Origin": "https://evil.example",
-	})
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("чужой origin получил код %d вместо %d", rec.Code, http.StatusForbidden)
-	}
-	if strings.Contains(rec.Body.String(), "c1") {
-		t.Error("ответ утёк чужому источнику")
-	}
-}
-
-func TestLocalOriginIsAllowed(t *testing.T) {
-	s := newTestServer(t, config.AmneziaWGConfig{ID: "c1", Name: "тест"})
-
-	for _, origin := range []string{"http://localhost:3000", "http://127.0.0.1:8081", "http://[::1]:8081"} {
-		rec := request(t, s, http.MethodGet, "/api/configs", "", map[string]string{"Origin": origin})
-		if rec.Code != http.StatusOK {
-			t.Errorf("origin %q отвергнут с кодом %d", origin, rec.Code)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
-			t.Errorf("origin %q: заголовок ответа %q", origin, got)
-		}
-	}
-}
-
-// Preflight обязан отвечать сам: маршрута на OPTIONS в роутере нет, и без
-// этого браузер получал бы 404 без заголовков CORS и блокировал всё.
-func TestPreflight(t *testing.T) {
-	s := newTestServer(t)
-
-	rec := request(t, s, http.MethodOptions, "/api/configs", "", map[string]string{
-		"Origin": "http://localhost:3000",
-	})
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("preflight ответил кодом %d", rec.Code)
-	}
-	if rec.Header().Get("Access-Control-Allow-Methods") == "" {
-		t.Error("в ответе на preflight нет списка методов")
-	}
-}
-
-// Тело без предела означало бы, что любой локальный процесс может исчерпать
-// память backend'а, работающего от root.
 func TestOversizedBodyIsRejected(t *testing.T) {
 	s := newTestServer(t)
 
@@ -177,13 +124,10 @@ func TestAddRoutingRuleValidates(t *testing.T) {
 	}
 }
 
-// Неизвестный путь под /api — ошибка запроса, а не адрес страницы: отдать
-// здесь index.html значит вернуть клиенту HTML вместо JSON.
+// Ответ на неизвестный путь обязан быть JSON: клиент разбирает как JSON
+// любой ответ и на HTML упал бы с невнятной ошибкой парсера.
 func TestUnknownAPIPathReturnsJSON(t *testing.T) {
 	s := newTestServer(t)
-	if err := s.SetupStatic(""); err != nil {
-		t.Skipf("интерфейс не вшит в сборку: %v", err)
-	}
 
 	rec := request(t, s, http.MethodGet, "/api/такого-нет", "", nil)
 	if rec.Code != http.StatusNotFound {
@@ -191,18 +135,6 @@ func TestUnknownAPIPathReturnsJSON(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf("тип ответа %q — клиент упадёт на разборе", ct)
-	}
-}
-
-func TestSecurityHeaders(t *testing.T) {
-	s := newTestServer(t)
-	rec := request(t, s, http.MethodGet, "/api/vpn/status", "", nil)
-
-	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Errorf("X-Content-Type-Options: %q", got)
-	}
-	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
-		t.Errorf("X-Frame-Options: %q", got)
 	}
 }
 

@@ -11,12 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/user/amnezia-web-client/internal/api"
-	"github.com/user/amnezia-web-client/internal/auth"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/desktopuser"
@@ -36,9 +34,9 @@ const (
 	// пользуются.
 	idleTimeout = 2 * time.Minute
 
-	// Общего WriteTimeout здесь намеренно нет: он обрывал бы и WebSocket,
-	// который живёт всё время работы приложения. Предельные сроки на запись
-	// стоят на самих кадрах WebSocket, в пакете api.
+	// Общего WriteTimeout здесь намеренно нет: он обрывал бы поток
+	// изменений статуса (/api/vpn/events), который держится открытым всё
+	// время работы приложения.
 
 	// shutdownTimeout — сколько ждём завершения запросов при остановке.
 	shutdownTimeout = 5 * time.Second
@@ -50,17 +48,22 @@ const (
 
 	// parentPollInterval — как часто проверяем, жива ли оболочка.
 	parentPollInterval = 2 * time.Second
+
+	// maxSocketPath — предел длины пути сокета. Ядро хранит его в поле
+	// фиксированного размера (sun_path, 108 байт на Linux), и bind на пути
+	// длиннее отказывает невнятным «invalid argument». Берём с запасом.
+	maxSocketPath = 104
+
+	// staleSocketProbe — сколько ждём ответа от сокета, оставшегося от
+	// прошлого запуска. Соединение петлевое и локальное: живая служба
+	// принимает его мгновенно, а мёртвая отказывает сразу.
+	staleSocketProbe = 300 * time.Millisecond
 )
 
 func main() {
 	// Parse flags
-	port := flag.Int("port", 8080, "HTTP server port")
-	// Только петлевой интерфейс: у API нет аутентификации, работает он от
-	// root и отдаёт конфиги с приватными ключами. Значение по умолчанию
-	// 0.0.0.0 открывало всё это любому в локальной сети.
-	host := flag.String("host", "127.0.0.1", "HTTP server host")
+	socketPath := flag.String("socket", "", "Path to the API unix socket (default: api.sock next to the config)")
 	configPath := flag.String("config", "", "Path to config file (default: ~/.config/awg-client/config.json)")
-	webDir := flag.String("web", "", "Directory with built web UI (default: UI embedded at build time)")
 	parentPID := flag.Int("parent-pid", 0, "Exit when this PID disappears (used by the desktop shell)")
 	desktopExe := flag.String("desktop-exe", "", "Path to the desktop shell binary (used for the autostart entry)")
 	showVersion := flag.Bool("version", false, "Print the version and exit")
@@ -79,7 +82,8 @@ func main() {
 	}
 	log.Printf("Using config file: %s", resolvedPath)
 
-	warnIfExposed(*host)
+	owner := desktopuser.Resolve(resolvedPath)
+	socket := resolveSocketPath(*socketPath, resolvedPath)
 
 	// Load configuration
 	appConfig := config.NewAppConfig(resolvedPath)
@@ -99,27 +103,10 @@ func main() {
 	// опознаёт пользователя рабочего стола.
 	autostartMgr := autostart.NewManager(resolvedPath, *desktopExe)
 
-	// Токен доступа. Рождается до того, как откроется хоть один сокет:
-	// иначе между началом приёма запросов и появлением проверки была бы
-	// щель, в которую пролезает кто угодно.
-	token, err := newToken(resolvedPath)
-	if err != nil {
-		log.Fatalf("Не удалось подготовить токен доступа: %v", err)
-	}
-
 	// Create API server
-	server := api.NewServer(appConfig, vpnManager, autostartMgr, token)
-	server.StartPingLoop()
+	server := api.NewServer(appConfig, vpnManager, autostartMgr)
 
 	autoconnect(appConfig, vpnManager)
-
-	// Статический UI на том же порту: фронтенд обращается к API по адресу
-	// страницы, поэтому один origin — обязательное условие для оболочки.
-	if err := server.SetupStatic(*webDir); err != nil {
-		log.Printf("Web UI не подключён (%v) — доступен только API", err)
-	} else {
-		log.Printf("Web UI подключён")
-	}
 
 	// Backend поднимают через pkexec, и убить его от имени пользователя уже
 	// нельзя. Поэтому он сам следит за оболочкой: та исчезла — гасимся,
@@ -128,33 +115,22 @@ func main() {
 		go watchParent(*parentPID)
 	}
 
-	log.Printf("Starting API server on %s:%d", *host, *port)
-	log.Printf("Интерфейс: http://127.0.0.1:%d/?%s=%s", *port, auth.QueryParam, token.Value())
-
-	if err := serve(*host, *port, server, vpnManager); err != nil {
+	if err := serve(socket, owner, server, vpnManager); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
 
-// newToken готовит секрет доступа и кладёт его в файл, читаемый только
-// пользователем рабочего стола.
+// resolveSocketPath выбирает, где открыть сокет API.
 //
-// Backend работает от root, поэтому файл ему же и принадлежал бы: оболочка и
-// диагностика, работающие от пользователя, не смогли бы его прочитать, а
-// значит и обратиться к API.
-func newToken(configPath string) (*auth.Token, error) {
-	token, err := auth.New()
-	if err != nil {
-		return nil, err
+// Обычно путь передаёт оболочка: она знает каталог времени выполнения своей
+// сессии ($XDG_RUNTIME_DIR), а backend работает от root и увидел бы там
+// каталог root'а. Значение по умолчанию — рядом с настройками: так запуск из
+// терминала работает без лишних флагов.
+func resolveSocketPath(socketPath, configPath string) string {
+	if socketPath != "" {
+		return socketPath
 	}
-
-	path := auth.FilePath(configPath)
-	if err := token.Save(path, desktopuser.Resolve(configPath)); err != nil {
-		return nil, fmt.Errorf("не удалось записать %s: %w", path, err)
-	}
-
-	log.Printf("Токен доступа записан в %s", path)
-	return token, nil
+	return filepath.Join(filepath.Dir(configPath), "api.sock")
 }
 
 // resolveConfigPath доводит путь конфига до пригодного к использованию:
@@ -174,26 +150,6 @@ func resolveConfigPath(path string) (string, error) {
 	}
 
 	return path, nil
-}
-
-// warnIfExposed предупреждает о запуске на адресе, доступном извне машины.
-//
-// Запрещать не стали — сценарии вроде проброса через ssh существуют, — но
-// молчать здесь нельзя: у API нет аутентификации, работает он от root, и
-// GET /api/configs отдаёт приватные ключи всех подключений.
-func warnIfExposed(host string) {
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "":
-		return
-	}
-
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return
-	}
-
-	log.Printf("ВНИМАНИЕ: API открыт на %s, а не только на этой машине. "+
-		"У него нет аутентификации, и он отдаёт приватные ключи всех конфигураций — "+
-		"любой, кто дотянется до этого адреса, получит их и сможет управлять VPN", host)
 }
 
 // autoconnect подключается к конфигу, выбранному на главном экране.
@@ -256,7 +212,7 @@ func watchParent(pid int) {
 // Порядок при остановке важен: сначала перестаём принимать новые запросы,
 // потом разбираем туннель. Наоборот — значит дать интерфейсу поднять его
 // заново ровно между двумя шагами.
-func serve(host string, port int, handler http.Handler, vpnManager *vpn.Manager) error {
+func serve(socket string, owner desktopuser.User, handler http.Handler, vpnManager *vpn.Manager) error {
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -264,19 +220,18 @@ func serve(host string, port int, handler http.Handler, vpnManager *vpn.Manager)
 		ErrorLog:          log.Default(),
 	}
 
-	listeners, err := listen(host, port)
+	ln, err := listen(socket, owner)
 	if err != nil {
 		return err
 	}
+	log.Printf("API на %s", socket)
 
-	// Буфер на каждый слушатель: горутина обязана суметь отдать ошибку и
-	// завершиться, даже если её никто уже не читает.
-	errCh := make(chan error, len(listeners))
-	for _, ln := range listeners {
-		go func(ln net.Listener) {
-			errCh <- server.Serve(ln)
-		}(ln)
-	}
+	// Буфер на единицу: горутина обязана суметь отдать ошибку и завершиться,
+	// даже если её никто уже не читает.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Serve(ln)
+	}()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -320,42 +275,77 @@ func shutdownVPN(vpnManager *vpn.Manager) {
 	}
 }
 
-// listen открывает слушающие сокеты.
+// listen открывает unix-сокет API.
 //
-// Для loopback открываются ОБА адреса — 127.0.0.1 и ::1. Это важно: в браузере
-// "localhost" часто резолвится в ::1 первым, и запрос к сокету, открытому
-// только на IPv4, не доходит вообще (в вебе это видно как NetworkError).
-func listen(host string, port int) ([]net.Listener, error) {
-	hosts := []string{host}
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
-		hosts = []string{"127.0.0.1", "::1"}
+// Права 0600 и владелец — пользователь рабочего стола: это единственная
+// проверка доступа, какая у API есть. Backend работает от root и управляет
+// сетью, а GET /api/configs отдаёт приватные ключи всех подключений, поэтому
+// дотянуться до сокета не должен никто, кроме того, кто запустил клиент.
+//
+// Сам файл сокета Go снимает при закрытии слушателя, поэтому убирать его
+// отдельно не нужно.
+func listen(path string, owner desktopuser.User) (net.Listener, error) {
+	if len(path) >= maxSocketPath {
+		return nil, fmt.Errorf(
+			"путь сокета длиннее %d байт, ядро такой не примет: %s", maxSocketPath, path)
 	}
 
-	var listeners []net.Listener
-
-	for _, h := range hosts {
-		addr := net.JoinHostPort(h, strconv.Itoa(port))
-
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			// Единственный адрес не открылся — это фатально.
-			if len(hosts) == 1 {
-				return nil, err
-			}
-			// Один из loopback-адресов может отсутствовать (например, IPv6
-			// выключен в ядре) — этого достаточно, чтобы продолжить.
-			log.Printf("Skipping %s: %v", addr, err)
-			continue
-		}
-
-		listeners = append(listeners, ln)
-		log.Printf("Listening on http://%s", addr)
+	// 0700 на каталог: сокет с правами 0600 внутри каталога, куда всем можно
+	// войти, всё ещё защищён, но каталог заодно хранит настройки и ключи.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("не удалось создать каталог сокета: %w", err)
+	}
+	if err := owner.Own(dir); err != nil {
+		return nil, fmt.Errorf("не удалось передать каталог сокета пользователю: %w", err)
 	}
 
-	if len(listeners) == 0 {
-		return nil, fmt.Errorf("no listening socket could be opened on port %d", port)
+	if err := clearStaleSocket(path); err != nil {
+		return nil, err
 	}
 
-	return listeners, nil
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Права выставляем явно и до того, как кто-то успел соединиться: umask
+	// процесса нам не подчиняется и мог бы оставить сокет открытым для всех.
+	if err := os.Chmod(path, 0600); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("не удалось закрыть сокет от чужих: %w", err)
+	}
+	if err := owner.Own(path); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("не удалось передать сокет пользователю: %w", err)
+	}
+
+	return ln, nil
+}
+
+// clearStaleSocket убирает сокет прошлого запуска.
+//
+// Имя сокета остаётся в файловой системе и после смерти процесса, поэтому без
+// этого второй запуск упирался бы в «address already in use» навсегда. Но
+// снести файл вслепую нельзя: если служба ещё жива, это молча отобрало бы у
+// неё сокет. Поэтому сначала стучимся — ответили, значит уходим сами.
+func clearStaleSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%s занят файлом, который не является сокетом", path)
+	}
+
+	if conn, err := net.DialTimeout("unix", path, staleSocketProbe); err == nil {
+		conn.Close()
+		return fmt.Errorf("служба уже запущена (сокет %s отвечает)", path)
+	}
+
+	return os.Remove(path)
 }

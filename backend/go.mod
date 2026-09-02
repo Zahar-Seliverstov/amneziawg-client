@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/gorilla/mux v1.8.1
-	github.com/gorilla/websocket v1.5.3
 	golang.org/x/net v0.44.0
 )
 

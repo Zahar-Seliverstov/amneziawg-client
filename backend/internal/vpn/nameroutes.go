@@ -25,6 +25,7 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
+	"github.com/user/amnezia-web-client/internal/iproute"
 	"github.com/user/amnezia-web-client/internal/routing"
 )
 
@@ -67,7 +68,7 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 	if rc.Mode == config.RoutingModeDirectList {
 		installer = newBypassInstaller(m)
 	} else {
-		installer = tunnelInstaller{ifname: m.ifname()}
+		installer = tunnelInstaller{ip: m.ip, ifname: m.ifname()}
 	}
 
 	set := routing.NewDynamicSet(installer)
@@ -76,8 +77,10 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 		if !matcher.Match(answer.Name) {
 			return
 		}
+		// Считаем взятые под учёт адреса, а не поставленные маршруты: часть
+		// из них уже идёт куда надо и своего маршрута не требует.
 		if n := set.Observe(answer.Addrs, answer.TTL, time.Now()); n > 0 {
-			log.Printf("Правило по имени %s: добавлено маршрутов %d", answer.Name, n)
+			log.Printf("Правило по имени %s: адресов взято под учёт %d", answer.Name, n)
 		}
 	})
 
@@ -139,46 +142,56 @@ func sweepLoop(set *routing.DynamicSet, stop <-chan struct{}) {
 
 // tunnelInstaller заворачивает адрес в туннель.
 type tunnelInstaller struct {
+	ip     iproute.Tool
 	ifname string
 }
 
 func (t tunnelInstaller) Add(p netip.Prefix) error {
-	return runCmd("ip", "route", "add", p.String(), "dev", t.ifname)
+	return t.ip.AddRoute(p.String(), "dev", t.ifname)
 }
 
 func (t tunnelInstaller) Remove(p netip.Prefix) error {
-	return runCmd("ip", "route", "del", p.String(), "dev", t.ifname)
+	return t.ip.DelRoute(p.String(), "dev", t.ifname)
 }
 
-// bypassInstaller выводит адрес мимо туннеля через обычный шлюз.
+// bypassInstaller выводит адрес мимо туннеля — тем путём, каким система шла
+// бы к нему без VPN (см. bypass.go).
 //
-// Шлюз, через который маршрут поставлен, запоминается. Спрашивать его заново
-// при снятии нельзя: шлюз по умолчанию меняется при переключении сети (Wi-Fi
-// на кабель, смена точки доступа), и удаление по новому адресу не находит
-// запись — маршрут остаётся в таблице навсегда, продолжая выводить трафик
-// мимо туннеля уже после того, как правило удалили.
+// Поставленный маршрут запоминается целиком. Спрашивать путь заново при
+// снятии нельзя: он меняется при переключении сети (Wi-Fi на кабель, смена
+// точки доступа), и удаление по новому пути не находит запись — маршрут
+// остаётся в таблице навсегда, продолжая выводить трафик мимо туннеля уже
+// после того, как правило удалили.
+//
+// Пустая запись значит «адрес и так шёл мимо туннеля, мы ничего не ставили».
+// Помнить об этом нужно наравне с маршрутами: иначе на каждый ответ DNS с
+// таким адресом клиент заново опрашивал бы ядро, а снятие пыталось бы убрать
+// чужой маршрут.
 type bypassInstaller struct {
 	m *Manager
 
-	mu       sync.Mutex
-	gateways map[netip.Prefix]string
+	mu        sync.Mutex
+	installed map[netip.Prefix][]string
 }
 
 func newBypassInstaller(m *Manager) *bypassInstaller {
-	return &bypassInstaller{m: m, gateways: make(map[netip.Prefix]string)}
+	return &bypassInstaller{m: m, installed: make(map[netip.Prefix][]string)}
 }
 
 func (b *bypassInstaller) Add(p netip.Prefix) error {
-	gateway, err := b.m.gatewayFor(p.Addr().String())
+	args, needed, err := b.m.bypassRoute(p.String())
 	if err != nil {
 		return err
 	}
-	if err := runCmd("ip", "route", "add", p.String(), "via", gateway); err != nil {
-		return err
+
+	if needed {
+		if err := b.m.ip.AddRoute(args...); err != nil {
+			return err
+		}
 	}
 
 	b.mu.Lock()
-	b.gateways[p] = gateway
+	b.installed[p] = args
 	b.mu.Unlock()
 
 	return nil
@@ -186,14 +199,17 @@ func (b *bypassInstaller) Add(p netip.Prefix) error {
 
 func (b *bypassInstaller) Remove(p netip.Prefix) error {
 	b.mu.Lock()
-	gateway, known := b.gateways[p]
-	delete(b.gateways, p)
+	args, known := b.installed[p]
+	delete(b.installed, p)
 	b.mu.Unlock()
 
 	if !known {
 		return fmt.Errorf("маршрут %s не наш — снимать нечего", p)
 	}
-	return runCmd("ip", "route", "del", p.String(), "via", gateway)
+	if len(args) == 0 {
+		return nil // Ничего не ставили — нечего и снимать.
+	}
+	return b.m.ip.DelRoute(args...)
 }
 
 // parseDNSServers превращает адреса из конфига в список серверов с портом 53.

@@ -1,56 +1,45 @@
-// Тонкий клиент backend'а: только то, что нужно трею.
+// Тонкий клиент службы: единственное место, где оболочка говорит с backend'ом.
 //
-// HTTP пишем руками поверх TcpStream — соединение локальное, без TLS и
-// редиректов, а тащить ради трёх запросов полноценный http-клиент незачем.
-// Запрос уходит как HTTP/1.0: Go тогда не включает chunked-кодирование и
-// просто закрывает соединение, так что тело читается до EOF.
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+// Транспорт — unix-сокет с правами 0600 в каталоге времени выполнения сессии.
+// Права файла и есть проверка доступа: служба работает от root, управляет
+// сетью и отдаёт приватные ключи всех подключений, поэтому дотянуться до неё
+// должен только тот, кто её запустил. Ни токена, ни cookie, ни TCP-порта для
+// этого не нужно.
+//
+// HTTP пишем руками поверх сокета: соединение локальное, без TLS и редиректов,
+// а тащить ради десятка запросов полноценный http-клиент незачем. Запрос
+// уходит как HTTP/1.0 — Go тогда не включает chunked-кодирование и просто
+// закрывает соединение, так что тело читается до EOF.
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
 
-pub const PORT: u16 = 8081;
+/// Предел на обычный запрос. Подключение к VPN отвечает не мгновенно.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub fn url() -> String {
-    format!("http://127.0.0.1:{PORT}/")
-}
+/// Предел на проверку готовности. Короткий намеренно: проверка идёт в цикле
+/// опроса, и повиснуть в ней на общем сроке значит не дождаться готовности.
+const READY_TIMEOUT: Duration = Duration::from_millis(700);
 
-pub fn addr() -> SocketAddr {
-    SocketAddr::from((Ipv4Addr::LOCALHOST, PORT))
-}
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Файл с токеном доступа. Его пишет backend при запуске с правами 0600 на
-/// имя пользователя рабочего стола — прочитать может только он.
-pub fn token_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".config/awg-client/token")
-}
-
-/// Токен доступа к API.
+/// Сокет API.
 ///
-/// Читается при каждом запросе, а не запоминается: backend рождает новый
-/// токен на каждый запуск, и запомненный протух бы после его перезапуска.
-/// Файл крошечный, а запросов здесь единицы в секунду.
-pub fn token() -> Option<String> {
-    let raw = std::fs::read_to_string(token_path()).ok()?;
-    let trimmed = raw.trim().to_string();
-    (!trimmed.is_empty()).then_some(trimmed)
-}
-
-/// Адрес интерфейса вместе с токеном: по нему backend выдаёт cookie и
-/// перенаправляет на чистый адрес, чтобы токен не осел в истории.
-pub fn url_with_token() -> String {
-    match token() {
-        Some(t) => format!("http://127.0.0.1:{PORT}/?token={t}"),
-        None => url(),
+/// $XDG_RUNTIME_DIR — правильное место для сокетов: каталог принадлежит
+/// пользователю, живёт ровно столько же, сколько сессия, и очищается системой.
+/// Без него (сессия без systemd-logind) откатываемся к каталогу настроек.
+pub fn socket_path() -> PathBuf {
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        if !runtime.is_empty() {
+            return PathBuf::from(runtime).join("awg-client/api.sock");
+        }
     }
-}
 
-/// Backend уже слушает порт?
-pub fn is_up() -> bool {
-    TcpStream::connect_timeout(&addr(), Duration::from_millis(300)).is_ok()
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".config/awg-client/api.sock")
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -68,6 +57,15 @@ pub struct Config {
     pub name: String,
 }
 
+/// Служба отвечает НАМ — по тому сокету, который сейчас на месте.
+///
+/// Одного существующего файла сокета мало: имя переживает смерть процесса, и
+/// проверка «файл есть» проходила бы по службе, которой уже нет. Ответ 200
+/// означает разом и что служба жива, и что это именно она заняла сокет.
+pub fn is_ready() -> bool {
+    matches!(exchange("GET", "/api/vpn/status", "", READY_TIMEOUT), Ok((200, _)))
+}
+
 pub fn status() -> io::Result<Status> {
     parse(&request("GET", "/api/vpn/status", None)?)
 }
@@ -78,7 +76,7 @@ pub fn configs() -> io::Result<Vec<Config>> {
 
 pub fn connect(config_id: &str) -> io::Result<()> {
     // Тело собирает serde_json, а не format!. Идентификатор приходит из
-    // ответа backend'а, но склеивать JSON строками всё равно нельзя: вырезание
+    // ответа службы, но склеивать JSON строками всё равно нельзя: вырезание
     // кавычек руками — это ровно тот приём, который однажды пропускает
     // управляющий символ и превращает запрос в другой запрос.
     let body = serde_json::json!({ "config_id": config_id }).to_string();
@@ -89,55 +87,97 @@ pub fn disconnect() -> io::Result<()> {
     request("POST", "/api/vpn/disconnect", Some("{}")).map(|_| ())
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(body: &str) -> io::Result<T> {
-    serde_json::from_str(body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+/// Запрос вместе с кодом ответа: интерфейсу нужен и код, и тело — по коду он
+/// отличает отказ от успеха, а тело разбирает как JSON в обоих случаях.
+pub fn request_raw(method: &str, path: &str, body: Option<&str>) -> io::Result<(u16, String)> {
+    exchange(method, path, body.unwrap_or_default(), REQUEST_TIMEOUT)
+}
+
+/// Поток изменений статуса: ответ остаётся открытым, и в него построчно
+/// приходит JSON. Возвращается читатель, стоящий на первой строке тела.
+///
+/// Срока чтения нет намеренно: между сменами состояния поток молчит сколько
+/// угодно, и любой таймаут здесь означал бы разрыв на ровном месте.
+pub fn open_events() -> io::Result<BufReader<UnixStream>> {
+    let stream = UnixStream::connect(socket_path())?;
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+
+    write_request(&stream, "GET", "/api/vpn/events", "")?;
+
+    let mut reader = BufReader::new(stream);
+    match read_head(&mut reader)? {
+        200 => Ok(reader),
+        code => Err(io::Error::other(format!("поток событий отвечает {code}"))),
+    }
 }
 
 fn request(method: &str, path: &str, body: Option<&str>) -> io::Result<String> {
-    let mut stream = TcpStream::connect_timeout(&addr(), Duration::from_millis(500))?;
-    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let (code, body) = request_raw(method, path, body)?;
 
-    let body = body.unwrap_or_default();
+    if code == 200 || code == 204 {
+        return Ok(body);
+    }
+    Err(io::Error::other(format!("HTTP {code}: {}", body.trim())))
+}
 
-    // Без токена API отвечает отказом: он закрыт от остальных пользователей
-    // машины. Здесь заголовок, а не cookie, — так ходят все клиенты, кроме
-    // браузера.
-    let authorization = match token() {
-        Some(t) => format!("Authorization: Bearer {t}\r\n"),
-        None => String::new(),
-    };
+fn exchange(
+    method: &str,
+    path: &str,
+    body: &str,
+    read_timeout: Duration,
+) -> io::Result<(u16, String)> {
+    // Своего connect_timeout у UnixStream нет, но он и не нужен: локальный
+    // сокет либо принимает соединение сразу, либо отказывает.
+    let stream = UnixStream::connect(socket_path())?;
+    stream.set_read_timeout(Some(read_timeout))?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
 
+    write_request(&stream, method, path, body)?;
+
+    let mut reader = BufReader::new(stream);
+    let code = read_head(&mut reader)?;
+
+    let mut raw = Vec::new();
+    reader.read_to_end(&mut raw)?;
+
+    Ok((code, String::from_utf8_lossy(&raw).into_owned()))
+}
+
+fn write_request(mut out: impl Write, method: &str, path: &str, body: &str) -> io::Result<()> {
     let head = format!(
         "{method} {path} HTTP/1.0\r\n\
-         Host: 127.0.0.1:{PORT}\r\n\
+         Host: localhost\r\n\
          Content-Type: application/json\r\n\
-         {authorization}\
          Content-Length: {}\r\n\r\n",
         body.len()
     );
-    stream.write_all(head.as_bytes())?;
-    stream.write_all(body.as_bytes())?;
-    stream.flush()?;
 
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw)?;
-    let raw = String::from_utf8_lossy(&raw).into_owned();
+    out.write_all(head.as_bytes())?;
+    out.write_all(body.as_bytes())?;
+    out.flush()
+}
 
-    let (head, body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "битый ответ backend'а"))?;
+/// Читает строку статуса и заголовки, оставляя читатель на начале тела.
+fn read_head(reader: &mut BufReader<UnixStream>) -> io::Result<u16> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
 
-    let ok = head
-        .lines()
-        .next()
-        .map(|line| line.contains(" 200 ") || line.contains(" 204 "))
-        .unwrap_or(false);
+    let code = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "битый ответ службы"))?;
 
-    if !ok {
-        let first = head.lines().next().unwrap_or("нет статуса");
-        return Err(io::Error::other(format!("{first}: {}", body.trim())));
+    loop {
+        let mut header = String::new();
+        // Конец заголовков — пустая строка; ноль означает обрыв соединения.
+        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+            return Ok(code);
+        }
     }
+}
 
-    Ok(body.to_string())
+fn parse<T: for<'de> Deserialize<'de>>(body: &str) -> io::Result<T> {
+    serde_json::from_str(body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }

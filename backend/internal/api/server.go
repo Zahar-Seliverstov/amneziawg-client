@@ -5,24 +5,14 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"net/url"
 	"sync"
-	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/gorilla/websocket"
-	"github.com/user/amnezia-web-client/internal/auth"
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/version"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
-
-// wsClient wraps a websocket connection with its own write mutex
-type wsClient struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
-}
 
 // Server is the API server
 type Server struct {
@@ -32,34 +22,19 @@ type Server struct {
 	vpnManager *vpn.Manager
 	autostart  *autostart.Manager
 
-	// token закрывает API от остальных пользователей машины — см. auth.go.
-	// Нулевое значение отказывает всем: забытый токен обязан ломать доступ
-	// заметно, а не открывать его молча.
-	token *auth.Token
-
-	// WebSocket connections for real-time updates
-	wsClients  map[*wsClient]bool
-	wsMu       sync.RWMutex
-	wsUpgrader websocket.Upgrader
+	// Подписчики на поток изменений статуса — см. events.go.
+	eventClients map[*eventClient]bool
+	eventsMu     sync.RWMutex
 }
 
 // NewServer creates a new API server
-func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, autostartMgr *autostart.Manager, token *auth.Token) *Server {
+func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, autostartMgr *autostart.Manager) *Server {
 	s := &Server{
-		router:     mux.NewRouter(),
-		config:     cfg,
-		vpnManager: vpnMgr,
-		autostart:  autostartMgr,
-		token:      token,
-		wsClients:  make(map[*wsClient]bool),
-		wsUpgrader: websocket.Upgrader{
-			// Без предела рукопожатие может висеть бесконечно, занимая
-			// соединение и горутину.
-			HandshakeTimeout: 10 * time.Second,
-			CheckOrigin: func(r *http.Request) bool {
-				return allowedOrigin(r.Header.Get("Origin"))
-			},
-		},
+		router:       mux.NewRouter(),
+		config:       cfg,
+		vpnManager:   vpnMgr,
+		autostart:    autostartMgr,
+		eventClients: make(map[*eventClient]bool),
 	}
 
 	s.setupRoutes()
@@ -95,8 +70,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/routing/rules/{id}", s.handleDeleteRoutingRule).Methods("DELETE")
 	api.HandleFunc("/routing/mode", s.handleSetRoutingMode).Methods("PUT")
 
-	// WebSocket for real-time updates
-	api.HandleFunc("/ws", s.handleWebSocket)
+	// Поток изменений статуса
+	api.HandleFunc("/vpn/events", s.handleEvents).Methods("GET")
 
 	// Замер задержки до сервера VPN. Параметров нет: активный конфиг и
 	// состояние подключения бэкенд знает сам, и цель выбирает по ним.
@@ -122,88 +97,24 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/selected-config", s.handleGetSelectedConfig).Methods("GET")
 	api.HandleFunc("/selected-config", s.handleSetSelectedConfig).Methods("PUT")
 
-	// CORS оборачивает роутер целиком, а не подключается через router.Use:
-	// mux вызывает middleware ТОЛЬКО для совпавших маршрутов. Маршрутов на
-	// OPTIONS здесь нет, поэтому preflight-запрос уходил в NotFoundHandler и
-	// отдавал 404 без Access-Control-Allow-Origin — браузер блокировал всё.
-	// Порядок важен: CORS отвечает на preflight сам и до проверки токена.
-	// Браузер не шлёт cookie в preflight, поэтому проверка отказала бы ему —
-	// и настоящий запрос браузер бы уже не отправил.
-	s.handler = corsMiddleware(s.authMiddleware(s.router))
+	// Ни проверки доступа, ни CORS: API живёт на unix-сокете с правами 0600,
+	// и до него дотягивается только владелец. Промежуточных слоёв не
+	// осталось вовсе — роутер и есть обработчик.
+	s.handler = s.router
+
+	// Неизвестный путь — ошибка запроса, и ответ на неё обязан быть JSON:
+	// клиент разбирает любой ответ как JSON и на HTML упал бы.
+	s.router.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonError(w, "Неизвестный эндпоинт", http.StatusNotFound)
+	})
+	s.router.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonError(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	})
 }
 
 // ServeHTTP implements http.Handler
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
-}
-
-// allowedOrigin разрешает обращаться к API только страницам, открытым с этой
-// же машины.
-//
-// Раньше здесь стояла звёздочка «разрешить всем», и это была дыра. У API нет
-// аутентификации, работает он от root, а GET /api/configs отдаёт конфиги
-// вместе с приватными ключами. Со звёздочкой любой сайт, открытый в браузере
-// пользователя, мог сделать fetch на 127.0.0.1 И ПРОЧИТАТЬ ОТВЕТ — то есть
-// увести ключи от всех подключений, не имея доступа к машине.
-//
-// Пустой Origin пропускаем: его не шлют запросы не из браузера — сама
-// оболочка, curl, тесты.
-func allowedOrigin(origin string) bool {
-	if origin == "" {
-		return true
-	}
-
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-
-	switch parsed.Hostname() {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	default:
-		return false
-	}
-}
-
-// corsMiddleware отвечает заголовками CORS и отсекает чужие источники.
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-
-		if !allowedOrigin(origin) {
-			http.Error(w, "origin not allowed", http.StatusForbidden)
-			return
-		}
-
-		// nosniff: ответы API — это JSON, и браузер не должен угадывать в них
-		// что-то исполняемое.
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// Страницу управления VPN, работающую от root, нельзя встраивать в
-		// чужой документ: невидимый фрейм поверх ссылки — это чужие нажатия
-		// на наши кнопки подключения и удаления.
-		w.Header().Set("X-Frame-Options", "DENY")
-
-		// Отражаем конкретный источник, а не звёздочку: со звёздочкой
-		// браузер разрешил бы читать ответ кому угодно.
-		if origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		// Authorization нужен клиентам, у которых нет cookie: интерфейс в
-		// режиме разработки живёт на своём порту и ходит с токеном в заголовке.
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		// Preflight завершаем здесь: до роутера он всё равно не дойдёт.
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Max-Age", "600")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
 }
 
 // applyRoutingNow пересобирает маршруты на живом туннеле сразу после
@@ -216,10 +127,10 @@ func (s *Server) applyRoutingNow() {
 	}
 }
 
-// maxRequestBody ограничивает тело запроса. У API нет аутентификации, и любой
-// локальный процесс может послать ему поток без конца: без предела backend,
-// работающий от root, съел бы всю память машины. Мегабайта хватает с запасом —
-// самая крупная сущность здесь это текст .conf на несколько килобайт.
+// maxRequestBody ограничивает тело запроса. Клиент здесь свой, но ошибиться
+// он может так же, как чужой: поток без конца съел бы всю память процесса,
+// работающего от root. Мегабайта хватает с запасом — самая крупная сущность
+// здесь это текст .conf на несколько килобайт.
 const maxRequestBody = 1 << 20
 
 // decodeJSON разбирает тело запроса и сам отвечает на ошибку. false означает,
@@ -517,157 +428,6 @@ func (s *Server) handleSetRoutingMode(w http.ResponseWriter, r *http.Request) {
 	s.applyRoutingNow()
 
 	jsonResponse(w, map[string]config.RoutingMode{"mode": req.Mode})
-}
-
-// Параметры WebSocket-соединений.
-const (
-	// wsReadDeadline — сколько ждём хоть что-нибудь от клиента. Обновляется
-	// каждым pong, поэтому живое соединение его никогда не достигает, а
-	// оборванное (усыплённый ноутбук, закрытая крышка) перестаёт занимать
-	// место в списке рассылки.
-	wsReadDeadline = 60 * time.Second
-
-	// wsWriteDeadline — предел на отправку одного сообщения. Без него
-	// зависший клиент с переполненным окном TCP держал бы рассылку статуса
-	// для всех остальных.
-	wsWriteDeadline = 10 * time.Second
-
-	// wsPingInterval должен быть заметно меньше wsReadDeadline, иначе клиент
-	// не успевает ответить до истечения срока.
-	wsPingInterval = 30 * time.Second
-
-	// wsReadLimit — от клиента сюда не приходит ничего, кроме служебных
-	// кадров, поэтому предел маленький: он не даёт послать сообщение,
-	// которое пришлось бы целиком держать в памяти.
-	wsReadLimit = 4 << 10
-
-	// maxWSClients ограничивает число подписчиков. Смотрит на статус один
-	// пользователь, максимум из нескольких вкладок; всё сверх этого — либо
-	// утечка соединений, либо попытка исчерпать память backend'а.
-	maxWSClients = 32
-)
-
-// WebSocket handlers
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Место проверяем до рукопожатия: отказ обычным HTTP клиент понимает,
-	// а закрытие уже поднятого WebSocket выглядит как обрыв связи и
-	// заставляет его переподключаться по кругу.
-	s.wsMu.RLock()
-	full := len(s.wsClients) >= maxWSClients
-	s.wsMu.RUnlock()
-
-	if full {
-		jsonError(w, "Слишком много подписчиков", http.StatusServiceUnavailable)
-		return
-	}
-
-	conn, err := s.wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		// Upgrade уже ответил клиенту сам.
-		log.Printf("WebSocket upgrade failed: %v", err)
-		return
-	}
-
-	client := &wsClient{conn: conn}
-
-	s.wsMu.Lock()
-	s.wsClients[client] = true
-	s.wsMu.Unlock()
-
-	// Send current status
-	s.sendWSMessage(client, "status", s.vpnManager.GetStatus())
-
-	// Keep connection alive
-	go s.wsReader(client)
-}
-
-// wsReader держит соединение открытым и убирает клиента, когда оно порвалось.
-// Ничего из присланного не читается: канал односторонний, команды приходят
-// обычными запросами HTTP.
-func (s *Server) wsReader(client *wsClient) {
-	defer s.dropClient(client)
-
-	client.conn.SetReadLimit(wsReadLimit)
-	client.conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
-	client.conn.SetPongHandler(func(string) error {
-		return client.conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
-	})
-
-	for {
-		if _, _, err := client.conn.ReadMessage(); err != nil {
-			return
-		}
-	}
-}
-
-// dropClient убирает клиента из рассылки и закрывает соединение.
-// Повторный вызов безопасен.
-func (s *Server) dropClient(client *wsClient) {
-	s.wsMu.Lock()
-	delete(s.wsClients, client)
-	s.wsMu.Unlock()
-
-	client.conn.Close()
-}
-
-// clients возвращает снимок списка подписчиков. Рассылка идёт по копии, а не
-// под блокировкой: отправка может застрять на десять секунд, и всё это время
-// никто не смог бы ни подключиться, ни отвалиться.
-func (s *Server) clients() []*wsClient {
-	s.wsMu.RLock()
-	defer s.wsMu.RUnlock()
-
-	list := make([]*wsClient, 0, len(s.wsClients))
-	for client := range s.wsClients {
-		list = append(list, client)
-	}
-	return list
-}
-
-// sendWSMessage отправляет одно сообщение. Клиент, которому не удалось
-// написать, отключается: его соединение уже нерабочее, и следующая рассылка
-// снова упёрлась бы в тот же таймаут.
-func (s *Server) sendWSMessage(client *wsClient, msgType string, data interface{}) {
-	msg := map[string]interface{}{
-		"type": msgType,
-		"data": data,
-	}
-
-	client.mu.Lock()
-	client.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
-	err := client.conn.WriteJSON(msg)
-	client.mu.Unlock()
-
-	if err != nil {
-		s.dropClient(client)
-	}
-}
-
-func (s *Server) broadcastStatus(status vpn.ConnectionStatus) {
-	for _, client := range s.clients() {
-		s.sendWSMessage(client, "status", status)
-	}
-}
-
-// StartPingLoop starts a goroutine that pings all WebSocket clients periodically
-func (s *Server) StartPingLoop() {
-	go func() {
-		ticker := time.NewTicker(wsPingInterval)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			for _, client := range s.clients() {
-				client.mu.Lock()
-				client.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
-				err := client.conn.WriteMessage(websocket.PingMessage, nil)
-				client.mu.Unlock()
-
-				if err != nil {
-					s.dropClient(client)
-				}
-			}
-		}
-	}()
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {

@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core'
+
 export interface AmneziaConfig {
   id: string
   name: string
@@ -100,25 +102,51 @@ export interface PingResult {
   error?: string
 }
 
+// Ответ службы в том виде, в каком его отдаёт оболочка.
+interface ApiResponse {
+  status: number
+  body: string
+}
+
+interface ApiRequest {
+  method?: string
+  body?: string
+}
+
+function parseBody(body: string): any {
+  if (!body.trim()) return null
+
+  try {
+    return JSON.parse(body)
+  } catch {
+    return null
+  }
+}
+
 export function useApi() {
-  async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(useApiUrl(path), {
-      ...options,
-      headers: {
-        ...useApiHeaders(),
-        ...options.headers
-      }
-    })
+  // Запросы идут не через fetch, а через оболочку: служба слушает unix-сокет
+  // с правами 0600, и до него из окна не дотянуться — сокеты браузеру
+  // недоступны. Заодно отпадает и токен: доступ решают права файла.
+  async function fetchApi<T>(path: string, options: ApiRequest = {}): Promise<T> {
+    let res: ApiResponse
+
+    try {
+      res = await invoke<ApiResponse>('api_request', {
+        method: options.method || 'GET',
+        path: `/api${path}`,
+        body: options.body ?? null
+      })
+    } catch (e) {
+      // Сюда попадаем, только если не удалось дойти до самой службы.
+      throw new Error(`Нет связи со службой: ${e}`)
+    }
 
     // Ответ без тела (или с телом не в JSON) — тоже ответ: разбирать его
-    // вслепую значило бы превратить понятную ошибку сервера в невнятное
+    // вслепую значило бы превратить понятную ошибку службы в невнятное
     // «Unexpected token» из парсера.
-    const data = await res.json().catch(() => null)
+    const data = parseBody(res.body)
 
-    if (res.status === 401) {
-      throw new Error('Нет доступа к службе: откройте приложение по ссылке с токеном')
-    }
-    if (!res.ok) {
+    if (res.status < 200 || res.status >= 300) {
       throw new Error(data?.error || `Ошибка ${res.status}`)
     }
 

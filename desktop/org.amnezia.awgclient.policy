@@ -4,7 +4,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 
 <!--
-  Разрешает запускать backend AmneziaWG с правами root без пароля, но только
+  Разрешает запускать службу AmneziaWG с правами root без пароля, но только
   из активной локальной сессии. Пароль спрашивается один раз — при установке
   этого файла (для неё нужен root).
 
@@ -13,7 +13,7 @@
   бинарник и получил root без пароля.
 -->
 <policyconfig>
-  <vendor>AmneziaWG Web Client</vendor>
+  <vendor>AmneziaWG Client</vendor>
 
   <action id="org.amnezia.awgclient.run-backend">
     <description>Управление VPN-соединением AmneziaWG</description>

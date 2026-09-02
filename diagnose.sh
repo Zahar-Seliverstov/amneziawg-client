@@ -20,22 +20,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_BIN="$SCRIPT_DIR/backend/build/awg-client"
 REPORT="$SCRIPT_DIR/diag-report.txt"
 BACKEND_LOG="$(mktemp /tmp/awg-diag-backend.XXXXXX.log)"
-DIAG_PORT=8099
+# Свой сокет, а не рабочий: диагностика поднимает отдельную службу и не должна
+# ни занять сокет работающего клиента, ни постучаться в него по ошибке.
+DIAG_SOCKET="${XDG_RUNTIME_DIR:-$HOME/.config/awg-client}/awg-diag.sock"
 
-# Токен доступа: backend закрыт от остальных пользователей машины. Файл он
-# пишет до того, как начинает слушать порт, поэтому к моменту первого запроса
-# токен уже на месте.
-diag_token() {
-    cat "$HOME/.config/awg-client/token" 2>/dev/null
-}
-
-# Обёртка над curl: подставляет токен и адрес backend'а.
+# Обёртка над curl. Ни токена, ни заголовков доступа: служба слушает unix-сокет
+# с правами 0600, и дотянуться до неё может только владелец. Имя хоста в адресе
+# формальное — соединение идёт по сокету из --unix-socket.
 api() {
     local method="$1" path="$2"; shift 2
     curl -s -m 20 -X "$method" \
-        -H "Authorization: Bearer $(diag_token)" \
+        --unix-socket "$DIAG_SOCKET" \
         -H "Content-Type: application/json" \
-        "$@" "http://127.0.0.1:$DIAG_PORT$path"
+        "$@" "http://localhost$path"
 }
 CONFIG_FILE="$HOME/.config/awg-client/config.json"
 
@@ -68,9 +65,10 @@ restore() {
     sleep 2
 
     if [ -n "$DIAG_BACKEND_PID" ]; then
-        sudo -n pkill -TERM -f "^$BACKEND_BIN -host 127.0.0.1 -port $DIAG_PORT" 2>/dev/null
+        sudo -n pkill -TERM -f "^$BACKEND_BIN -socket $DIAG_SOCKET" 2>/dev/null
         sleep 1
-        sudo -n pkill -KILL -f "^$BACKEND_BIN -host 127.0.0.1 -port $DIAG_PORT" 2>/dev/null
+        sudo -n pkill -KILL -f "^$BACKEND_BIN -socket $DIAG_SOCKET" 2>/dev/null
+        rm -f "$DIAG_SOCKET"
     fi
 
     # подчищаем свои следы на случай, если туннель не убрался сам
@@ -109,7 +107,7 @@ warn "AmneziaVPN будет отключён примерно на минуту.
 warn "Скрипт вернёт его сам, даже если что-то пойдёт не так."
 echo ""
 
-[ -x "$BACKEND_BIN" ] || { err "Нет собранного backend. Сначала: ./start.sh"; exit 1; }
+[ -x "$BACKEND_BIN" ] || { err "Нет собранной службы. Сначала: make build"; exit 1; }
 [ -f "$CONFIG_FILE" ] || { err "Нет конфигов. Добавь конфиг в интерфейсе."; exit 1; }
 
 say "Нужен пароль sudo"
@@ -143,8 +141,9 @@ run ip -brief address show
 run ip route show
 
 # ── свой экземпляр backend, лог в файл ──────────────────────────────────────
-say "Запускаю backend для опыта на порту $DIAG_PORT..."
-sudo -n env HOME="$HOME" "$BACKEND_BIN" -host 127.0.0.1 -port "$DIAG_PORT" -config "$CONFIG_FILE" \
+say "Запускаю службу для опыта на сокете $DIAG_SOCKET..."
+rm -f "$DIAG_SOCKET"
+sudo -n env HOME="$HOME" "$BACKEND_BIN" -socket "$DIAG_SOCKET" -config "$CONFIG_FILE" \
     > "$BACKEND_LOG" 2>&1 &
 DIAG_BACKEND_PID=$!
 
@@ -152,8 +151,8 @@ for i in $(seq 1 20); do
     api GET /api/vpn/status >/dev/null 2>&1 && break
     sleep 1
 done
-api GET /api/vpn/status >/dev/null 2>&1 || { err "Backend не поднялся"; exit 1; }
-ok "Backend работает"
+api GET /api/vpn/status >/dev/null 2>&1 || { err "Служба не поднялась"; exit 1; }
+ok "Служба работает"
 
 # Берём первый конфиг; можно указать имя: ./diagnose.sh "имя конфига"
 WANT_NAME="${1:-}"
@@ -264,6 +263,81 @@ echo "" >> "$REPORT"
 echo "\$ curl -4 https://example.com" >> "$REPORT"
 curl -4 -s -o /dev/null -m 15 -w "HTTP %{http_code} за %{time_total}s\n" https://example.com/ >> "$REPORT" 2>&1 \
     || echo "ПРОВАЛ (нет соединения)" >> "$REPORT"
+
+# ── чужие туннели поверх нашего ─────────────────────────────────────────────
+# Второй VPN (рабочий OpenVPN, например) остаётся поднятым, но его транспорт
+# теперь идёт внутри awg0. Свой MTU он при этом не пересчитывает: у tun0 как
+# было 1500, так и осталось, а в awg0 помещается на полсотни байт меньше.
+#
+# Ломается это молча и однобоко. Мелкие пакеты проходят — пинг отвечает,
+# TCP-соединение открывается, короткий HTTP-ответ приходит; крупные пропадают,
+# и рукопожатие TLS виснет на сертификате. Обычно такое чинит определение MTU
+# по пути, но туннель работает в пространстве пользователя и ICMP
+# «нужна фрагментация» в ответ не шлёт — получается чёрная дыра.
+#
+# Поэтому меряем не теорию, а факт: подбираем размер, который реально доходит
+# до того конца чужого туннеля.
+probe_path_mtu() {
+    local target="$1" lo=576 hi=1500 mid
+
+    # Нижнюю границу проверяем отдельно: не дойдёт и она — дело не в размере,
+    # и подбирать нечего.
+    ping -M do -c 1 -W 2 -s $((lo - 28)) "$target" >/dev/null 2>&1 || return 1
+
+    while [ $((hi - lo)) -gt 1 ]; do
+        mid=$(((lo + hi) / 2))
+        if ping -M do -c 1 -W 2 -s $((mid - 28)) "$target" >/dev/null 2>&1; then
+            lo=$mid
+        else
+            hi=$mid
+        fi
+    done
+
+    echo "$lo"
+}
+
+sec "ДРУГИЕ ТУННЕЛИ ПОВЕРХ ЭТОГО"
+
+OTHER_TUNNELS=0
+for ifc in $(ip -brief link show up | awk '{print $1}' | cut -d@ -f1); do
+    [ "$ifc" = "awg0" ] && continue
+    # POINTOPOINT отсеивает мосты docker и физические интерфейсы.
+    ip link show "$ifc" 2>/dev/null | head -1 | grep -q POINTOPOINT || continue
+
+    OTHER_TUNNELS=$((OTHER_TUNNELS + 1))
+    IFC_MTU="$(cat "/sys/class/net/$ifc/mtu" 2>/dev/null)"
+    rep ""
+    rep "$ifc: MTU $IFC_MTU"
+
+    # Тот конец туннеля: первый шлюз среди его маршрутов.
+    PEER="$(ip route show dev "$ifc" 2>/dev/null | awk '/ via / {print $3; exit}')"
+    if [ -z "$PEER" ]; then
+        rep "  не нашли адрес на той стороне — проверить размер пакета не на чем"
+        continue
+    fi
+
+    REAL_MTU="$(probe_path_mtu "$PEER")"
+    if [ -z "$REAL_MTU" ]; then
+        rep "  $PEER не отвечает — туннель либо не работает, либо режет ICMP"
+        continue
+    fi
+
+    rep "  фактически проходит до $PEER: $REAL_MTU байт"
+    if [ "$REAL_MTU" -lt "$IFC_MTU" ]; then
+        rep "  ВНИМАНИЕ: MTU завышен на $((IFC_MTU - REAL_MTU)) байт."
+        rep "  Мелкие пакеты идут, крупные пропадают: пинг отвечает и TCP"
+        rep "  открывается, а HTTPS виснет на сертификате."
+        rep "  Лечится так:  sudo ip link set $ifc mtu $REAL_MTU"
+        rep "  Закрепить — в конфиге этого VPN: tun-mtu $REAL_MTU"
+        warn "$ifc: MTU $IFC_MTU, а проходит $REAL_MTU — крупные пакеты пропадают"
+    else
+        ok "$ifc: MTU в порядке"
+    fi
+done
+
+if [ "$OTHER_TUNNELS" -eq 0 ]; then
+    rep "других туннелей не поднято"
+fi
 
 sec "ЛОГ BACKEND"
 rep ""
