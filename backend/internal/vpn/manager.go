@@ -738,7 +738,7 @@ func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routingCfg *conf
 	m.flushRoutes()
 
 	if err := m.configureRouting(cfg, routingCfg); err != nil {
-		return fmt.Errorf("failed to configure routing: %w", err)
+		return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
 	}
 
 	// Правила по доменам и зонам обслуживает посредник DNS: адреса для них
@@ -926,7 +926,7 @@ func (m *Manager) ApplyRouting(routing *config.RoutingConfig) error {
 	log.Printf("Re-applying routing rules on live tunnel")
 
 	if err := m.configureTraffic(cfg, routing); err != nil {
-		return fmt.Errorf("failed to re-apply routing: %w", err)
+		return fmt.Errorf("не удалось пересобрать маршруты: %w", err)
 	}
 
 	m.mu.Lock()
@@ -1079,7 +1079,7 @@ func (m *Manager) resolveRoutingRule(rule config.RoutingRule, resolver *net.Reso
 		return nil, nil
 
 	default:
-		return nil, fmt.Errorf("unknown rule type: %s", rule.Type)
+		return nil, fmt.Errorf("неизвестный тип правила: %s", rule.Type)
 	}
 }
 

@@ -11,12 +11,12 @@ func KeyToHex(base64Key string) (string, error) {
 	// Decode from base64
 	keyBytes, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil {
-		return "", fmt.Errorf("invalid base64 key: %w", err)
+		return "", fmt.Errorf("ключ не разобран из base64: %w", err)
 	}
 
 	// WireGuard keys are 32 bytes
 	if len(keyBytes) != 32 {
-		return "", fmt.Errorf("invalid key length: expected 32 bytes, got %d", len(keyBytes))
+		return "", fmt.Errorf("неверная длина ключа: ожидалось 32 байта, получено %d", len(keyBytes))
 	}
 
 	// Encode to hex

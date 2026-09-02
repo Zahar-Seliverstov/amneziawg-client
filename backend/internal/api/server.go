@@ -148,7 +148,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 			jsonError(w, "Запрос слишком большой", http.StatusRequestEntityTooLarge)
 			return false
 		}
-		jsonError(w, "Invalid JSON", http.StatusBadRequest)
+		jsonError(w, "Тело запроса не разобрано как JSON", http.StatusBadRequest)
 		return false
 	}
 
@@ -206,7 +206,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Правку подключённого конфига запрещаем: туннель уже поднят по старым
 	// параметрам, и содержимое разъехалось бы с тем, что работает.
 	if status := s.vpnManager.GetStatus(); status.ConfigID == id && status.State != vpn.StateDisconnected {
-		jsonError(w, "Cannot edit a config while it is in use", http.StatusConflict)
+		jsonError(w, "Нельзя менять конфигурацию, пока она подключена", http.StatusConflict)
 		return
 	}
 
@@ -219,7 +219,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.Name = s.config.UniqueConfigName(cfg.Name, id)
 
 	if !s.config.UpdateConfig(id, *cfg) {
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	updated := s.config.GetConfig(id)
 	if updated == nil {
 		// Конфигурацию успели удалить между сохранением и чтением.
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
@@ -271,7 +271,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.config.GetConfig(id)
 	if cfg == nil {
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
@@ -285,12 +285,12 @@ func (s *Server) handleDeleteConfig(w http.ResponseWriter, r *http.Request) {
 	// Check if this config is currently active
 	status := s.vpnManager.GetStatus()
 	if status.ConfigID == id && status.State != vpn.StateDisconnected {
-		jsonError(w, "Cannot delete active config", http.StatusBadRequest)
+		jsonError(w, "Нельзя удалить подключённую конфигурацию", http.StatusBadRequest)
 		return
 	}
 
 	if !s.config.DeleteConfig(id) {
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
@@ -316,14 +316,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.config.GetConfig(req.ConfigID)
 	if cfg == nil {
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
 	routing := s.config.GetRouting()
 
 	if err := s.vpnManager.Connect(cfg, &routing); err != nil {
-		jsonError(w, "Failed to connect: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, "Не удалось подключиться: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -336,7 +336,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if err := s.vpnManager.Disconnect(); err != nil {
-		jsonError(w, "Failed to disconnect: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, "Не удалось отключиться: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -399,7 +399,7 @@ func (s *Server) handleDeleteRoutingRule(w http.ResponseWriter, r *http.Request)
 	id := vars["id"]
 
 	if !s.config.DeleteRoutingRule(id) {
-		jsonError(w, "Rule not found", http.StatusNotFound)
+		jsonError(w, "Правило не найдено", http.StatusNotFound)
 		return
 	}
 
@@ -419,7 +419,7 @@ func (s *Server) handleSetRoutingMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !config.ValidRoutingMode(req.Mode) {
-		jsonError(w, "Invalid routing mode", http.StatusBadRequest)
+		jsonError(w, "Неизвестный режим маршрутизации", http.StatusBadRequest)
 		return
 	}
 
@@ -504,13 +504,13 @@ func (s *Server) handleSetSelectedConfig(w http.ResponseWriter, r *http.Request)
 	}
 
 	if req.ConfigID != "" && s.config.GetConfig(req.ConfigID) == nil {
-		jsonError(w, "Config not found", http.StatusNotFound)
+		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
 
 	s.config.SetSelectedConfig(req.ConfigID)
 	if err := s.config.Save(); err != nil {
-		jsonError(w, "Failed to save settings", http.StatusInternalServerError)
+		jsonError(w, "Не удалось сохранить настройки", http.StatusInternalServerError)
 		return
 	}
 
@@ -531,7 +531,7 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 	s.config.SetSettings(settings)
 
 	if err := s.config.Save(); err != nil {
-		jsonError(w, "Failed to save settings", http.StatusInternalServerError)
+		jsonError(w, "Не удалось сохранить настройки", http.StatusInternalServerError)
 		return
 	}
 

@@ -79,7 +79,7 @@ func ParseAmneziaConfig(name, rawConfig string) (*AmneziaWGConfig, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error scanning config: %w", err)
+		return nil, fmt.Errorf("не удалось прочитать конфигурацию: %w", err)
 	}
 
 	// Проверка целиком, а не пары обязательных полей: всё, что не отсеяно
