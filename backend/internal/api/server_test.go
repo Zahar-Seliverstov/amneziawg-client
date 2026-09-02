@@ -67,6 +67,46 @@ func TestAddConfigRejectsGarbage(t *testing.T) {
 	}
 }
 
+// Приватный ключ не должен уезжать в окно без нужды: списку он не нужен, а
+// текст .conf нужен только форме правки — по отдельному запросу.
+func TestConfigResponsesHideSecrets(t *testing.T) {
+	const raw = "[Interface]\nPrivateKey = qO8QDrIKR3vufYDHIRcbYSuVFPGqOcJ2P08S6r67dFA=\nAddress = 10.8.0.2/32\n\n[Peer]\nPublicKey = dGVzdHB1YmxpY2tleXRlc3RwdWJsaWNrZXkxMjM0NTY=\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0\n"
+
+	s := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{"name": "srv", "raw_config": raw})
+	rec := request(t, s, http.MethodPost, "/api/configs", string(body), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("конфигурация не добавлена: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var added struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &added); err != nil {
+		t.Fatalf("ответ не разобран: %v", err)
+	}
+
+	for _, path := range []string{"/api/configs", "/api/configs/" + added.ID} {
+		got := request(t, s, http.MethodGet, path, "", nil).Body.String()
+		if strings.Contains(got, "private_key") {
+			t.Errorf("%s отдаёт разобранный приватный ключ: %s", path, got)
+		}
+	}
+
+	if got := rec.Body.String(); strings.Contains(got, "PrivateKey") {
+		t.Errorf("ответ на добавление несёт текст .conf с ключом: %s", got)
+	}
+	if got := request(t, s, http.MethodGet, "/api/configs", "", nil).Body.String(); strings.Contains(got, "PrivateKey") {
+		t.Errorf("список несёт текст .conf с ключом: %s", got)
+	}
+
+	// А форме правки текст обязан приходить: иначе править нечего.
+	if got := request(t, s, http.MethodGet, "/api/configs/"+added.ID, "", nil).Body.String(); !strings.Contains(got, "PrivateKey") {
+		t.Errorf("подробности пришли без текста .conf: %s", got)
+	}
+}
+
 // Правила приходят и из интерфейса, и файлом от пользователя: непригодное
 // значение обязано быть отвергнуто, а не уехать в таблицу маршрутизации.
 func TestRoutingValidationOnHTTP(t *testing.T) {

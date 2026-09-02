@@ -183,7 +183,7 @@ func (s *Server) saveConfig() {
 // Config handlers
 func (s *Server) handleGetConfigs(w http.ResponseWriter, r *http.Request) {
 	configs := s.config.GetAllConfigs()
-	jsonResponse(w, configs)
+	jsonResponse(w, newConfigViews(configs))
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +232,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, updated)
+	jsonResponse(w, newConfigView(updated))
 }
 
 func (s *Server) handleAddConfig(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +262,7 @@ func (s *Server) handleAddConfig(w http.ResponseWriter, r *http.Request) {
 	s.config.AddConfig(*cfg)
 	s.saveConfig()
 
-	jsonResponse(w, cfg)
+	jsonResponse(w, newConfigView(cfg))
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +275,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, cfg)
+	jsonResponse(w, newConfigDetail(cfg))
 }
 
 func (s *Server) handleDeleteConfig(w http.ResponseWriter, r *http.Request) {

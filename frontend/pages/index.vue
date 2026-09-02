@@ -326,7 +326,7 @@
 </template>
 
 <script setup lang="ts">
-import type { AmneziaConfig, RoutingConfig, RoutingMode } from '~/composables/useApi'
+import type { AmneziaConfig, AmneziaConfigDetail, RoutingConfig, RoutingMode } from '~/composables/useApi'
 
 const api = useApi()
 const { status: wsStatus } = useVpnStatus()
@@ -697,16 +697,27 @@ async function loadData() {
 
 // Повторное нажатие на карандаш сворачивает форму — открывать её нечем,
 // кроме той же кнопки, поэтому она и закрывает.
-function toggleEdit(cfg: AmneziaConfig) {
+async function toggleEdit(cfg: AmneziaConfig) {
   if (editingId.value === cfg.id) {
     cancelEdit()
     return
   }
 
+  // Текст .conf в списке не приходит — в нём приватный ключ, и запрашивается
+  // он только здесь. Форму открываем, лишь получив текст: иначе пользователь
+  // увидел бы пустое поле и решил, что от конфигурации ничего не осталось.
+  let detail: AmneziaConfigDetail
+  try {
+    detail = await api.getConfig(cfg.id)
+  } catch (e: any) {
+    notify(e.message)
+    return
+  }
+
   cancelAdd()
   editingId.value = cfg.id
-  editName.value = cfg.name
-  editContent.value = cfg.raw_config
+  editName.value = detail.name
+  editContent.value = detail.raw_config
 }
 
 function cancelEdit() {

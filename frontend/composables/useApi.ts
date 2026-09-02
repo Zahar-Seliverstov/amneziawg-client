@@ -1,32 +1,17 @@
 import { invoke } from '@tauri-apps/api/core'
 
+// Конфигурация в том виде, в каком её отдаёт список. Секретов здесь нет:
+// приватный ключ лежит в тексте .conf, а тот приходит только по запросу
+// одной конфигурации — форме правки (см. getConfig).
 export interface AmneziaConfig {
   id: string
   name: string
-  raw_config: string
   created_at: string
-  interface: {
-    private_key: string
-    address: string[]
-    dns?: string[]
-    mtu?: number
-    jc?: number
-    jmin?: number
-    jmax?: number
-    s1?: number
-    s2?: number
-    h1?: number
-    h2?: number
-    h3?: number
-    h4?: number
-  }
-  peers: {
-    public_key: string
-    preshared_key?: string
-    endpoint?: string
-    allowed_ips: string[]
-    persistent_keepalive?: number
-  }[]
+}
+
+// Подробности одной конфигурации: то же плюс исходный текст .conf.
+export interface AmneziaConfigDetail extends AmneziaConfig {
+  raw_config: string
 }
 
 export interface ConnectionStatus {
@@ -156,6 +141,12 @@ export function useApi() {
   // Configs
   async function getConfigs(): Promise<AmneziaConfig[]> {
     return fetchApi<AmneziaConfig[]>('/configs')
+  }
+
+  // Текст .conf запрашивается отдельно и только когда он нужен: в нём
+  // приватный ключ, и держать его в памяти окна всё время незачем.
+  async function getConfig(id: string): Promise<AmneziaConfigDetail> {
+    return fetchApi<AmneziaConfigDetail>(`/configs/${id}`)
   }
   
   async function addConfig(name: string, rawConfig: string): Promise<AmneziaConfig> {
@@ -287,6 +278,7 @@ export function useApi() {
     ping,
     getVersion,
     getConfigs,
+    getConfig,
     addConfig,
     updateConfig,
     deleteConfig,
