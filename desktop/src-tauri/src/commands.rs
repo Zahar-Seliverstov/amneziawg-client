@@ -24,8 +24,17 @@ pub struct ApiResponse {
     pub body: String,
 }
 
+/// Запрос к службе.
+///
+/// Команда асинхронная, а сам поход по сокету уходит в отдельный поток, и это
+/// не украшение. Синхронная команда Tauri выполняется в главном потоке — том
+/// самом, который рисует окно. Каждый запрос к службе останавливал всё окно
+/// на своё время, а запросы к тому же ещё и выстраивались в очередь: при
+/// открытии главного экрана их уходит сразу несколько, и один из них —
+/// замер задержки до сервера, который честно идёт по сети. Интерфейс замирал
+/// на секунду-две ровно там, где должен был просто перерисоваться.
 #[tauri::command]
-pub fn api_request(
+pub async fn api_request(
     method: String,
     path: String,
     body: Option<String>,
@@ -41,9 +50,16 @@ pub fn api_request(
         return Err(format!("недопустимый путь {path}"));
     }
 
-    api::request_raw(&method, &path, body.as_deref())
-        .map(|(status, body)| ApiResponse { status, body })
-        .map_err(|e| e.to_string())
+    // spawn_blocking, а не просто async: внутри обычные блокирующие чтение и
+    // запись в сокет, и в асинхронном потоке они заняли бы рабочий поток
+    // среды выполнения вместо главного — беда та же, только незаметнее.
+    tauri::async_runtime::spawn_blocking(move || {
+        api::request_raw(&method, &path, body.as_deref())
+            .map(|(status, body)| ApiResponse { status, body })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("запрос не выполнен: {e}"))?
 }
 
 /// Состояние запуска службы.
