@@ -22,16 +22,22 @@ import (
 	"sync"
 )
 
-const (
+// Пути к системным файлам. Переменные, а не константы, только ради тестов:
+// проверять надо именно перекладывание файлов, а писать в /etc тест не может
+// и не должен.
+var (
 	// resolvConfPath — файл, из которого системный резолвер берёт серверы имён.
 	resolvConfPath = "/etc/resolv.conf"
 
 	// resolvBackupPath — куда откладывается прежний файл. Имя постоянное:
 	// по нему же уборка после аварийного завершения находит, что вернуть.
 	resolvBackupPath = "/etc/resolv.conf.awg-backup"
+)
 
-	resolvHeader = "# Создано awg-client на время VPN-соединения.\n" +
-		"# Прежний файл сохранён как " + resolvBackupPath + " и вернётся при отключении.\n"
+const (
+	// resolvMarker — по нему свой файл отличается от чужого. Нужен там, где
+	// резервной копии нет: удалять можно только то, что создали сами.
+	resolvMarker = "# Создано awg-client"
 
 	// resolvOptions включает EDNS0: без него сервер обязан уместить ответ в
 	// 512 байт и всё, что длиннее, помечает как усечённое. Резолвер тогда
@@ -158,14 +164,20 @@ func nameserverLines(servers []string) string {
 
 // resolvContent собирает содержимое /etc/resolv.conf целиком.
 func resolvContent(servers []string) string {
-	return resolvHeader + nameserverLines(servers) + resolvOptions
+	header := resolvMarker + " на время VPN-соединения.\n" +
+		"# Прежний файл сохранён как " + resolvBackupPath + " и вернётся при отключении.\n"
+
+	return header + nameserverLines(servers) + resolvOptions
 }
 
 // restoreResolvConf возвращает сохранённый файл на место.
 func restoreResolvConf() error {
 	if _, err := os.Lstat(resolvBackupPath); err != nil {
 		if os.IsNotExist(err) {
-			return nil // Сохранять было нечего — значит и возвращать нечего.
+			// Копии нет — значит, и сохранять было нечего: файла до нас в
+			// системе не существовало. Свой убираем за собой, иначе система
+			// останется с сервером имён, который исчез вместе с туннелем.
+			return removeOwnResolvConf()
 		}
 		return err
 	}
@@ -175,6 +187,26 @@ func restoreResolvConf() error {
 	return os.Rename(resolvBackupPath, resolvConfPath)
 }
 
+// removeOwnResolvConf снимает файл, написанный нами, и только его. Чужой
+// остаётся на месте: он мог появиться после нашей подмены — например, от
+// диспетчера сети, — и удалять его значит ломать разрешение имён вместо того,
+// чтобы его починить.
+func removeOwnResolvConf() error {
+	data, err := os.ReadFile(resolvConfPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	if !strings.HasPrefix(string(data), resolvMarker) {
+		return nil
+	}
+
+	return os.Remove(resolvConfPath)
+}
+
 // restoreOrphanedDNS возвращает серверы имён, если прошлый запуск завершился
 // аварийно и не успел этого сделать.
 //
@@ -182,7 +214,17 @@ func restoreResolvConf() error {
 // указывающим на исчезнувший вместе с туннелем адрес: имена перестают
 // разрешаться совсем, и связи между этим и VPN пользователю не видно.
 func restoreOrphanedDNS() {
-	if _, err := os.Lstat(resolvBackupPath); err != nil {
+	_, backupErr := os.Lstat(resolvBackupPath)
+	if backupErr != nil && !os.IsNotExist(backupErr) {
+		return
+	}
+
+	// Копии нет — прибираем разве что собственный файл, оставшийся от
+	// прошлого запуска на системе, где resolv.conf до нас не было.
+	if os.IsNotExist(backupErr) {
+		if err := removeOwnResolvConf(); err != nil {
+			log.Printf("Не удалось убрать %s, оставшийся от прошлого запуска: %v", resolvConfPath, err)
+		}
 		return
 	}
 
