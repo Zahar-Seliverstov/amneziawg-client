@@ -873,6 +873,8 @@ textarea.input {
   flex-shrink: 0;
 }
 
+/* Метка в заголовке блока настроек. Спокойная по умолчанию — «Скоро» это
+   обещание, а не предупреждение. */
 .setting-badge {
   margin-left: auto;
   padding: 2px 8px;
@@ -880,10 +882,21 @@ textarea.input {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--amber);
-  background: rgba(192, 138, 46, 0.15);
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 4px;
 }
+
+/* А вот «Эксперимент» — предупреждение: возможность проверена не везде, и
+   узнать об этом после того, как связь пропала, — худший вариант. */
+.setting-badge--beta {
+  color: var(--amber);
+  background: rgba(192, 138, 46, 0.15);
+}
+
+/* Блок, который ещё не работает: виден, но не притворяется живым. */
+.setting-group--soon .setting-group__header span:first-of-type,
+.setting-group--soon .setting-group__header svg { opacity: 0.65; }
 
 .setting-row {
   display: flex;

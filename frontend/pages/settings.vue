@@ -85,6 +85,7 @@
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
           <span>Блокировка трафика</span>
+          <span class="setting-badge setting-badge--beta">Эксперимент</span>
         </div>
         <label class="setting-row" :class="{ 'setting-row--disabled': !killSwitch.available }">
           <span class="setting-row__label">
@@ -105,6 +106,45 @@
             </span>
           </span>
         </label>
+      </div>
+
+      <!-- Оформление и язык: сделаны, но ещё не работают. Показываем
+           выключенными, а не прячем — так видно, что они запланированы, и
+           их не приходится искать в следующей версии заново. -->
+      <div class="setting-group setting-group--soon">
+        <div class="setting-group__header">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 3a9 9 0 0 0 0 18 4.5 4.5 0 0 0 0-9 4.5 4.5 0 0 1 0-9z" />
+          </svg>
+          <span>Тема</span>
+          <span class="setting-badge">Скоро</span>
+        </div>
+        <div class="setting-row setting-row--disabled">
+          <span class="setting-row__label">
+            <span>Оформление</span>
+            <span class="setting-row__note">Пока только тёмное — светлое появится в следующих версиях</span>
+          </span>
+          <span class="setting-row__value">Тёмное</span>
+        </div>
+      </div>
+
+      <div class="setting-group setting-group--soon">
+        <div class="setting-group__header">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z" />
+          </svg>
+          <span>Язык</span>
+          <span class="setting-badge">Скоро</span>
+        </div>
+        <div class="setting-row setting-row--disabled">
+          <span class="setting-row__label">
+            <span>Язык интерфейса</span>
+            <span class="setting-row__note">Пока только русский — перевод появится в следующих версиях</span>
+          </span>
+          <span class="setting-row__value">Русский</span>
+        </div>
       </div>
 
       <!-- Информация о приложении -->
@@ -163,7 +203,9 @@ const killSwitchNote = computed(() => {
   if (killSwitch.value.enabled && killSwitch.value.reason) {
     return killSwitch.value.reason
   }
-  return 'При обрыве туннеля трафик не уходит в обход, а блокируется до восстановления связи. '
+  return 'Возможность экспериментальная: проверена не на всех системах, поэтому включайте её, '
+    + 'если готовы к тому, что связь придётся чинить руками. '
+    + 'При обрыве туннеля трафик не уходит в обход, а блокируется до восстановления связи. '
     + 'Пока блокировка действует, локальная сеть тоже недоступна. '
     + 'Работает только когда весь трафик идёт через VPN, без исключений в маршрутизации'
 })
