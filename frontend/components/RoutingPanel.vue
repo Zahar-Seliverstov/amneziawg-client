@@ -85,19 +85,26 @@
 
     <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
          что именно добавится и каким видом, ещё до нажатия. -->
-    <ul v-if="pending || candidate" class="rules rules--new">
-      <li class="row" :class="{ 'row--pending': pending }">
-        <span class="tag" :class="`tag--${(pending || draft).type}`">
-          {{ ruleTypeLabel((pending || draft).type!) }}
-        </span>
-        <span class="row__value">{{ (pending || draft).value }}</span>
-        <span v-if="pending" class="row__note">добавляем…</span>
-        <button v-else class="btn btn--accent row__add" @click="addRule">
+    <!-- Что вот-вот появится в списке: правила, которые сейчас добавляются,
+         и то, что набрано в поле. Отдельным блоком над списком — добавляемое
+         правило живёт своей жизнью, а поле в этот момент уже свободно и ждёт
+         следующего. -->
+    <TransitionGroup v-if="adding.length || candidate" tag="ul" name="rule" class="rules rules--new">
+      <li v-for="item in adding" :key="item.key" class="row row--adding">
+        <span class="tag" :class="`tag--${item.type}`">{{ ruleTypeLabel(item.type) }}</span>
+        <span class="row__value">{{ item.value }}</span>
+        <span class="row__note">добавляем…</span>
+      </li>
+
+      <li v-if="candidate" key="candidate" class="row">
+        <span class="tag" :class="`tag--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
+        <span class="row__value">{{ draft.value }}</span>
+        <button class="btn btn--accent row__add" @click="addRule">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           Добавить
         </button>
       </li>
-    </ul>
+    </TransitionGroup>
 
     <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
          адрес того же сервера — это одна запись в голове пользователя. -->
@@ -142,7 +149,7 @@
     <!-- Пустое место объясняем, только когда объяснять есть что. Пока внизу
          стоит строка будущего правила, «ничего не найдено» — это шум: и так
          видно, что такого правила ещё нет. -->
-    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !pending" class="muted">
+    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !adding.length" class="muted">
       {{ rules.length
         ? 'Ничего не найдено'
         : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
@@ -152,7 +159,7 @@
 
 <script setup lang="ts">
 import type { RoutingConfig, RoutingMode } from '~/composables/useApi'
-import type { RuleDraft } from '~/composables/useRuleDraft'
+import type { RuleType } from '~/composables/useRuleDraft'
 
 // Правила маршрутизации: режим, поле поиска-добавления и список.
 //
@@ -176,10 +183,18 @@ const sources = ref<Record<string, string>>({})
 
 const input = ref('')
 
-// pending — правило, которое сейчас добавляется. Хранится целиком, а не
-// флагом: пока идёт запрос, в поле можно набрать что-то другое, и строка
-// обязана показывать то, что действительно уходит в службу.
-const pending = ref<RuleDraft | null>(null)
+// Правила, которые сейчас добавляются. Их может быть несколько: поле
+// освобождается сразу после нажатия, и следующее правило набирают, пока
+// служба возится с предыдущим. Значение хранится целиком — строка обязана
+// показывать то, что действительно ушло в службу, а не то, что сейчас в поле.
+interface AddingRule {
+  key: number
+  type: RuleType
+  value: string
+}
+
+const adding = ref<AddingRule[]>([])
+let addingKey = 0
 
 // switching — идёт смена режима. Служба на ней пересобирает маршруты целиком,
 // и без отметки переключатель выглядит заевшим.
@@ -215,18 +230,27 @@ const existing = computed(() => {
 const hint = computed(() => {
   if (draft.value.kind === 'invalid') return draft.value.reason
   if (existing.value) return 'Такое правило уже есть — оно отмечено в списке'
+  if (alreadyAdding.value) return 'Такое правило уже добавляется'
   return ''
 })
 
 const hintClass = computed(() => {
   if (draft.value.kind === 'invalid') return 'rule-hint--bad'
-  if (existing.value) return 'rule-hint--known'
+  if (existing.value || alreadyAdding.value) return 'rule-hint--known'
   return ''
 })
 
-// candidate — правило, которое добавится по нажатию: набрано целиком и в
-// списке его ещё нет.
-const candidate = computed(() => draft.value.kind === 'ready' && !existing.value)
+// Такое же правило уже уехало в службу и ждёт ответа. Второй раз его слать
+// незачем, а показывать кнопку — значит обещать то, чего не будет.
+const alreadyAdding = computed(
+  () => draft.value.kind === 'ready' && adding.value.some(item => item.value === draft.value.value)
+)
+
+// candidate — правило, которое добавится по нажатию: набрано целиком, в
+// списке его ещё нет и оно не в пути.
+const candidate = computed(
+  () => draft.value.kind === 'ready' && !existing.value && !alreadyAdding.value
+)
 
 const { groups, loose } = useRuleGroups(rules, sources)
 
@@ -293,25 +317,30 @@ async function setMode(mode: RoutingMode) {
 }
 
 // Добавление идёт не мгновенно: служба пересобирает маршруты и DNS на живом
-// туннеле. Строка будущего правила на это время остаётся на месте и говорит,
-// что происходит, — иначе нажатие выглядит пропавшим и кнопку жмут снова.
+// туннеле. Ждать её, держа поле занятым, незачем — правило отделяется в
+// собственную строку и живёт там до ответа, а поле сразу свободно для
+// следующего.
 async function addRule() {
-  if (draft.value.kind !== 'ready' || existing.value || pending.value) return
+  if (!candidate.value) return
 
   const { type, value } = draft.value
-  pending.value = draft.value
+  const item: AddingRule = { key: ++addingKey, type: type!, value: value! }
+
+  adding.value = [...adding.value, item]
+  input.value = ''
 
   try {
-    await api.addRoutingRule(type!, value!)
-    // Поле очищаем только после согласия службы: отвергнутое значение чаще
-    // всего надо поправить, а не набирать заново.
-    input.value = ''
+    await api.addRoutingRule(item.type, item.value)
     await load()
-    emit('notify', `Добавлено: ${value}`, 'ok')
+    emit('notify', `Добавлено: ${item.value}`, 'ok')
   } catch (e: any) {
     emit('notify', e.message)
+
+    // Отвергнутое значение чаще всего надо поправить, а не набирать заново:
+    // возвращаем его в поле, если пользователь не занял его своим.
+    if (!input.value) input.value = item.value
   } finally {
-    pending.value = null
+    adding.value = adding.value.filter(other => other.key !== item.key)
   }
 }
 

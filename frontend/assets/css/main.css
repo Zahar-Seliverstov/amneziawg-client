@@ -616,16 +616,10 @@ body {
 
 .rules .row:last-child { border-bottom: none; }
 
-/* Правило, которого ещё нет: набранное в поле сложилось в годное значение и
-   ждёт нажатия. Пунктир — то же, что и в бумагах: место оставлено, но не
-   заполнено. Стоит перед списком, потому что читается как его продолжение,
-   а не как часть поля ввода. */
-.rules--new {
-  margin-bottom: 8px;
-  background: transparent;
-  border-style: dashed;
-  border-color: #4b535f;
-}
+/* Блок над списком: правила, которые сейчас добавляются, и то, что набрано
+   в поле. Стоит перед списком, потому что читается как его продолжение, а не
+   как часть поля ввода. */
+.rules--new { margin-bottom: 8px; }
 
 .row__add {
   flex-shrink: 0;
@@ -652,6 +646,37 @@ body {
 
 /* Зачёркнуто только уходящее: у добавляемого правила жизнь впереди. */
 .row--removing .row__value { text-decoration: line-through; }
+
+/* Правило в пути: служба его принимает, а поле ввода уже свободно. Отсюда и
+   другая анимация — не гаснущее дыхание, как у уходящего, а бегущий по
+   строке отсвет: работа идёт, и её результат появится ниже. */
+.row--adding {
+  position: relative;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.row--adding::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.07) 50%,
+    transparent 100%
+  );
+  animation: sweep 1.15s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* Значения в этой строке приглушены: правило ещё не принято, и выглядеть
+   наравне с уже стоящими в списке оно не должно. */
+.row--adding .row__value { color: var(--text-dim); }
 
 /* Смена режима тоже применяется на живом туннеле и тоже не мгновенна. */
 .choice--pending {
