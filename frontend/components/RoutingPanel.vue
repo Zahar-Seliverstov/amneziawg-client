@@ -85,8 +85,8 @@
 
     <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
          что именно добавится и каким видом, ещё до нажатия. -->
-    <ul v-if="draft.kind === 'ready' && !existing" class="list list--tight">
-      <li class="row row--new">
+    <ul v-if="candidate" class="rules rules--new">
+      <li class="row">
         <span class="tag" :class="`tag--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
         <span class="row__value">{{ draft.value }}</span>
         <button class="btn btn--accent row__add" :disabled="adding" @click="addRule">
@@ -113,28 +113,33 @@
         </span>
       </div>
 
-      <ul class="list list--tight group__list">
+      <TransitionGroup tag="ul" name="rule" class="rules group__list">
         <RuleRow
           v-for="rule in group.visible"
           :key="rule.id"
           :rule="rule"
           :matched="rule.id === existing?.id"
+          :removing="removing.includes(rule.id)"
           @delete="deleteRule"
         />
-      </ul>
+      </TransitionGroup>
     </div>
 
-    <ul v-if="visibleLoose.length" class="list list--tight">
+    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="rule" class="rules">
       <RuleRow
         v-for="rule in visibleLoose"
         :key="rule.id"
         :rule="rule"
         :matched="rule.id === existing?.id"
+        :removing="removing.includes(rule.id)"
         @delete="deleteRule"
       />
-    </ul>
+    </TransitionGroup>
 
-    <p v-if="!visibleGroups.length && !visibleLoose.length" class="muted">
+    <!-- Пустое место объясняем, только когда объяснять есть что. Пока внизу
+         стоит строка будущего правила, «ничего не найдено» — это шум: и так
+         видно, что такого правила ещё нет. -->
+    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate" class="muted">
       {{ rules.length
         ? 'Ничего не найдено'
         : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
@@ -167,6 +172,12 @@ const sources = ref<Record<string, string>>({})
 
 const input = ref('')
 const adding = ref(false)
+
+// Правила, которые сейчас удаляются. Удаление идёт не мгновенно: служба
+// пересобирает маршруты и DNS на живом туннеле, и это занимает заметное
+// время. Без отметки строка всё это время стоит как ни в чём не бывало, и
+// пользователь жмёт крестик снова и снова.
+const removing = ref<string[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const modes = [
@@ -186,10 +197,12 @@ const existing = computed(() => {
   return rules.value.find(r => r.value.trim().toLowerCase() === draft.value.value) || null
 })
 
+// Подпись под полем говорит только то, чего не видно и так: что набранное
+// не годится или что такое правило уже есть. Готовность подписи не требует —
+// про неё говорит сама строка будущего правила с кнопкой.
 const hint = computed(() => {
   if (draft.value.kind === 'invalid') return draft.value.reason
   if (existing.value) return 'Такое правило уже есть — оно отмечено в списке'
-  if (draft.value.kind === 'ready') return 'Enter — добавить'
   return ''
 })
 
@@ -198,6 +211,10 @@ const hintClass = computed(() => {
   if (existing.value) return 'rule-hint--known'
   return ''
 })
+
+// candidate — правило, которое добавится по нажатию: набрано целиком и в
+// списке его ещё нет.
+const candidate = computed(() => draft.value.kind === 'ready' && !existing.value)
 
 const { groups, loose } = useRuleGroups(rules, sources)
 
@@ -280,7 +297,11 @@ async function addRule() {
 }
 
 async function deleteRule(id: string) {
+  // Повторное нажатие по той же строке ничего не делает: запрос уже идёт.
+  if (removing.value.includes(id)) return
+
   const value = rules.value.find(r => r.id === id)?.value || ''
+  removing.value = [...removing.value, id]
 
   try {
     await api.deleteRoutingRule(id)
@@ -288,6 +309,8 @@ async function deleteRule(id: string) {
     emit('notify', `Удалено: ${value}`, 'ok')
   } catch (e: any) {
     emit('notify', e.message)
+  } finally {
+    removing.value = removing.value.filter(pending => pending !== id)
   }
 }
 
