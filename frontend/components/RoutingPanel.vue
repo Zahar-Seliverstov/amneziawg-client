@@ -54,13 +54,7 @@
     <!-- Одно поле на поиск и на добавление: пока набранное не складывается в
          правило, оно ищет по списку; сложилось — рядом появляется «Добавить».
          Вид правила виден по самому значению, выбирать его руками не нужно. -->
-    <div
-      class="rule-field"
-      :class="{
-        'rule-field--bad': draft.kind === 'invalid',
-        'rule-field--ready': draft.kind === 'ready' && !existing
-      }"
-    >
+    <div class="rule-field" :class="{ 'rule-field--bad': draft.kind === 'invalid' }">
       <svg class="rule-field__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round">
         <circle cx="10.5" cy="10.5" r="6.5" />
         <path d="M20 20l-4.6-4.6" />
@@ -79,26 +73,28 @@
         @keyup.esc="input = ''"
       />
 
-      <span v-if="draft.kind === 'ready'" class="tag rule-field__type">{{ ruleTypeLabel(draft.type!) }}</span>
-
       <button v-if="input" class="icon-btn rule-field__clear" aria-label="Очистить" @click="input = ''">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor">
           <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 12.1-1.4 1.4L12 13.4l-2.1 2.1-1.4-1.4L10.6 12 8.5 9.9l1.4-1.4L12 10.6l2.1-2.1 1.4 1.4L13.4 12z" />
         </svg>
       </button>
 
-      <button
-        v-if="draft.kind === 'ready' && !existing"
-        class="btn btn--accent rule-field__add"
-        :disabled="adding"
-        @click="addRule"
-      >
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
-        Добавить
-      </button>
     </div>
 
     <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
+
+    <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
+         что именно добавится и каким видом, ещё до нажатия. -->
+    <ul v-if="draft.kind === 'ready' && !existing" class="list list--tight">
+      <li class="row row--new">
+        <span class="tag" :class="`tag--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
+        <span class="row__value">{{ draft.value }}</span>
+        <button class="btn btn--accent row__add" :disabled="adding" @click="addRule">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+          Добавить
+        </button>
+      </li>
+    </ul>
 
     <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
          адрес того же сервера — это одна запись в голове пользователя. -->
@@ -106,7 +102,6 @@
       v-for="group in visibleGroups"
       :key="group.source"
       class="group"
-      :class="`group--${group.color}`"
     >
       <div class="group__head">
         <span class="group__dot" aria-hidden="true"></span>
@@ -194,7 +189,7 @@ const existing = computed(() => {
 const hint = computed(() => {
   if (draft.value.kind === 'invalid') return draft.value.reason
   if (existing.value) return 'Такое правило уже есть — оно отмечено в списке'
-  if (draft.value.kind === 'ready') return 'Enter или «Добавить»'
+  if (draft.value.kind === 'ready') return 'Enter — добавить'
   return ''
 })
 
@@ -235,13 +230,23 @@ async function load() {
   loadSources()
 }
 
-// Источники подтягиваются отдельно и молча: не ответивший DNS означает список
-// без группировки, а не повод ругаться на пользователя.
+// Источники подтягиваются отдельно. Молчащий DNS ошибкой не считается —
+// служба всё равно отвечает тем, что успела выяснить, — поэтому отказ здесь
+// означает ровно одно: эндпоинта нет, служба старее интерфейса. Об этом
+// говорим один раз: без него группировки не будет вовсе, и списывать это на
+// «не сгруппировалось» пользователю не с чего.
+let sourcesWarned = false
+
 async function loadSources() {
   try {
     sources.value = await api.getRoutingSources()
-  } catch (e) {
+  } catch (e: any) {
     console.error('Не удалось определить источники правил:', e)
+
+    if (!sourcesWarned) {
+      sourcesWarned = true
+      emit('notify', 'Служба не умеет группировать правила — пересоберите и перезапустите её')
+    }
   }
 }
 

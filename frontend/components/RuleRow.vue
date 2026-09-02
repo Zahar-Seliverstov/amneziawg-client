@@ -1,6 +1,6 @@
 <template>
   <li class="row" :class="{ 'row--match': matched }">
-    <span class="tag">{{ ruleTypeLabel(rule.type) }}</span>
+    <span class="tag" :class="`tag--${rule.type}`">{{ ruleTypeLabel(rule.type) }}</span>
     <span class="row__value">{{ rule.value }}</span>
     <span v-if="matched" class="row__note">уже есть</span>
     <button class="icon-btn icon-btn--danger" aria-label="Удалить" @click="$emit('delete', rule.id)">
