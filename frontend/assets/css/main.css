@@ -49,6 +49,22 @@
 
   --r:           12px;
   --r-sm:        9px;
+
+  /* Движение. Одна шкала на всё приложение: быстро — то, что отвечает на
+     палец; медленнее — то, что разворачивается и занимает место. */
+  --t-tap:       90ms;
+  --t-fast:      140ms;
+  --t:           200ms;
+  --t-slow:      260ms;
+
+  /* Входящее замедляется к концу: движение выглядит остановившимся, а не
+     оборванным. Уходящее, наоборот, ускоряется — задерживать взгляд на том,
+     чего уже нет, незачем. --ease-pop с лёгким перелётом: им щёлкают метки
+     и отклики на нажатие. */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:     cubic-bezier(0.4, 0, 1, 1);
+  --ease:        cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-pop:    cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 * {
@@ -130,7 +146,7 @@ body {
   cursor: pointer;
   font-family: inherit;
   color: var(--text);
-  transition: transform 0.1s ease, opacity 0.2s ease;
+  transition: transform var(--t-tap) var(--ease-pop), opacity var(--t) var(--ease);
 }
 
 .power__face {
@@ -146,7 +162,8 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.10);
   /* Единственный объёмный элемент: мягкий градиент и одна внутренняя
      подсветка сверху. Ни двойных фасок, ни внешних теней. */
-  transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+  transition: background var(--t-slow) var(--ease), color var(--t-slow) var(--ease),
+    box-shadow var(--t-slow) var(--ease), transform var(--t) var(--ease-out);
 }
 
 .power__icon {
@@ -199,6 +216,19 @@ body {
 }
 
 /* Подключено — зелёная */
+/* Подключились — кнопка коротко подаётся вперёд. Это единственное место, где
+   движение отмечает не действие пользователя, а ответ службы: между нажатием
+   и соединением проходят секунды, и возврат внимания к кнопке в этот момент
+   стоит того. */
+.power--on .power__face {
+  animation: settle var(--t-slow) var(--ease-pop);
+}
+
+@keyframes settle {
+  from { transform: scale(0.94); }
+  to   { transform: none; }
+}
+
 .power--on .power__face {
   background: linear-gradient(180deg, var(--green-hi) 0%, var(--green) 100%);
   color: #fff;
@@ -250,6 +280,7 @@ body {
 /* ─── Вкладки ───────────────────────────────────────────────────────────── */
 
 .tabs {
+  position: relative;
   display: flex;
   gap: 3px;
   padding: 3px;
@@ -259,7 +290,25 @@ body {
   border-radius: var(--r);
 }
 
+/* Подложка выбранной вкладки — отдельный элемент, который переезжает, а не
+   зажигается на новом месте. Так видно, что это одна и та же подложка, и
+   переключение читается как движение, а не как мигание. */
+.tabs__slider {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 4.5px);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  transition: transform var(--t) var(--ease-out);
+}
+
+.tabs--routing .tabs__slider { transform: translateX(calc(100% + 3px)); }
+
 .tabs__btn {
+  position: relative;
+  z-index: 1;
   flex: 1;
   padding: 9px 12px;
   border: none;
@@ -270,13 +319,13 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: color var(--t-fast) var(--ease), transform var(--t-tap) var(--ease);
 }
 
 .tabs__btn:hover { color: var(--text); }
+.tabs__btn:active { transform: scale(0.98); }
 
 .tabs__btn--on {
-  background: var(--surface-2);
   color: var(--text);
   font-weight: 600;
 }
@@ -331,7 +380,7 @@ body {
   border-radius: var(--r-sm);
   outline: 1px solid transparent;
   outline-offset: -2px;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--t) var(--ease), outline-color var(--t) var(--ease);
 }
 
 .rule-field:focus-within {
@@ -407,8 +456,13 @@ body {
   border: 1px solid var(--line-soft);
   border-radius: var(--r);
   margin-bottom: 7px;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    transform var(--t-tap) var(--ease);
 }
+
+/* Строка, по которой можно нажать, отвечает тем же, чем и кнопка. */
+.row--tap:active,
+.choice__item:active { transform: scale(0.994); }
 
 .row:last-child,
 .choice__item:last-child { margin-bottom: 0; }
@@ -490,7 +544,18 @@ body {
   align-items: center;
   justify-content: center;
   color: transparent;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+/* Галочка выбора щёлкает: выбор — это решение пользователя, и подтверждение
+   ему полагается заметное. Перелёт крошечный, но именно он отличает
+   «поставилось» от «было всегда». */
+.mark svg { animation: pop var(--t) var(--ease-pop) both; }
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.4); }
+  to   { opacity: 1; transform: none; }
 }
 
 .row--selected .mark,
@@ -694,37 +759,64 @@ body {
    Имена переходов общие, потому что и движение общее: список правил и список
    конфигураций меняются одинаково, и выглядеть это должно одинаково. */
 
-/* Строка списка: появилась, ушла, подвинулась. */
-.list-enter-active,
-.list-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
+/* Строка списка. Появляется сверху и на месте замедляется; уходит иначе —
+   складывается по высоте и уезжает влево, а соседи занимают её место сами,
+   без прыжка. Схлопывать высоту важнее, чем гасить: пока строка держит
+   место, список после удаления дёргается целиком. */
+.list-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
 
-.list-enter-from,
-.list-leave-to { opacity: 0; transform: translateY(-4px); }
+.list-enter-from { opacity: 0; transform: translateY(-6px) scale(0.99); }
 
-.list-move { transition: transform 0.2s ease; }
+.list-leave-active {
+  overflow: hidden;
+  max-height: 120px;
+  transition:
+    opacity var(--t-fast) var(--ease-in),
+    transform var(--t) var(--ease-in),
+    max-height var(--t-slow) var(--ease),
+    padding-top var(--t-slow) var(--ease),
+    padding-bottom var(--t-slow) var(--ease),
+    border-bottom-width var(--t-slow) var(--ease),
+    margin-bottom var(--t-slow) var(--ease);
+}
 
-/* Появление и исчезновение на месте: подписи, метки, пояснения. */
-.fade-enter-active,
-.fade-leave-active { transition: opacity 0.16s ease; }
+.list-leave-to {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-width: 0;
+  margin-bottom: 0;
+  transform: translateX(-10px);
+}
 
-.fade-enter-from,
-.fade-leave-to { opacity: 0; }
+.list-move { transition: transform var(--t) var(--ease); }
+
+/* Появление и исчезновение на месте: подписи, метки, пояснения. Приходит
+   чуть снизу — так видно, что текст появился, а не был всегда. */
+.fade-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
+.fade-leave-active { transition: opacity var(--t-fast) var(--ease-in), transform var(--t-fast) var(--ease-in); }
+
+.fade-enter-from { opacity: 0; transform: translateY(3px); }
+.fade-leave-to { opacity: 0; transform: translateY(-3px); }
 
 /* Смена раздела по вкладке. out-in: разделы разной высоты, и показывать их
-   одновременно значит дёргать страницу. */
-.tab-enter-active,
-.tab-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+   одновременно значит дёргать страницу. Уходит быстрее, чем приходит: пауза
+   между ними иначе читается как задержка отклика. */
+.tab-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
+.tab-leave-active { transition: opacity var(--t-fast) var(--ease-in), transform var(--t-fast) var(--ease-in); }
 
-.tab-enter-from { opacity: 0; transform: translateX(6px); }
-.tab-leave-to   { opacity: 0; transform: translateX(-6px); }
+.tab-enter-from { opacity: 0; transform: translateX(10px); }
+.tab-leave-to   { opacity: 0; transform: translateX(-10px); }
 
-/* Переход между страницами — теми же 0.15 с, только без сдвига вбок:
-   настройки и главный экран не соседи в ряду, а разные места. */
-.page-enter-active,
-.page-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+/* Переход между страницами — без сдвига вбок: настройки и главный экран не
+   соседи в ряду, а разные места. Отсюда и лёгкое приближение: страница
+   приходит на зрителя, а не проезжает мимо. */
+.page-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
+.page-leave-active { transition: opacity var(--t-fast) var(--ease-in), transform var(--t-fast) var(--ease-in); }
 
-.page-enter-from { opacity: 0; transform: translateY(6px); }
-.page-leave-to   { opacity: 0; transform: translateY(-6px); }
+.page-enter-from { opacity: 0; transform: translateY(8px) scale(0.99); }
+.page-leave-to   { opacity: 0; transform: translateY(-4px) scale(0.995); }
 
 /* Раскрытие: форма правки внутри карточки, форма добавления под списком.
    Высота содержимого заранее неизвестна, поэтому едет не она, а доля строки
@@ -733,7 +825,7 @@ body {
 .expand {
   display: grid;
   grid-template-rows: 1fr;
-  transition: grid-template-rows 0.22s ease, opacity 0.22s ease;
+  transition: grid-template-rows var(--t-slow) var(--ease), opacity var(--t-slow) var(--ease);
 }
 
 .expand > * { overflow: hidden; }
@@ -748,7 +840,7 @@ body {
    запаздыванием друг за другом. Задержки короткие — это не представление, а
    подсказка о порядке чтения. */
 .rise {
-  animation: rise 0.28s ease both;
+  animation: rise var(--t-slow) var(--ease-out) both;
 }
 
 .rise:nth-child(2) { animation-delay: 0.04s; }
@@ -829,7 +921,8 @@ body {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
     0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: filter 0.15s ease, transform 0.06s ease, box-shadow 0.12s ease;
+  transition: filter var(--t-fast) var(--ease), transform var(--t-tap) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
 }
 
 .btn:hover:not(:disabled) { filter: brightness(1.14); }
@@ -842,6 +935,12 @@ body {
 }
 
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Кнопка занята: нажатие принято, ответ ещё идёт. */
+.btn--busy {
+  animation: breathe 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
 
 /* Главное действие: та же гамма и тот же объём, но на ступень светлее
    и с более контрастной кромкой. Заметнее соседей, не выпадая из строки. */
@@ -892,7 +991,8 @@ body {
   background: transparent;
   color: #7c8492;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease),
+    transform var(--t-tap) var(--ease-pop);
 }
 
 /* Без этого SVG выравнивается по базовой линии текста и уезжает
@@ -903,6 +1003,11 @@ body {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
 }
+
+/* Нажатие видно раньше, чем случится действие: значок проседает под пальцем.
+   Особенно важно там, где действие не мгновенно, — удаление правила идёт
+   секунду, и до отклика окно выглядит замершим. */
+.icon-btn:active:not(:disabled) { transform: scale(0.88); }
 
 .icon-btn--danger:hover:not(:disabled) {
   color: var(--red);
@@ -924,7 +1029,7 @@ body {
   color: var(--text);
   font-size: 14px;
   font-family: inherit;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--t) var(--ease), outline-color var(--t) var(--ease);
 }
 
 /* Фокус обозначается самой рамкой: она становится светлой и вдвое толще
@@ -1021,8 +1126,12 @@ textarea.input {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-dim);
   cursor: pointer;
-  transition: filter 0.15s ease, opacity 0.15s ease;
+  transition: filter var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease),
+    background var(--t) var(--ease), color var(--t) var(--ease),
+    transform var(--t-tap) var(--ease-pop);
 }
+
+.ping-badge:active:not(:disabled) { transform: scale(0.94); }
 
 .ping-badge:hover:not(:disabled) { filter: brightness(1.35); }
 
@@ -1132,15 +1241,15 @@ textarea.input {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.toast-enter-active,
-.toast-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.toast-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
+.toast-leave-active { transition: opacity var(--t-fast) var(--ease-in), transform var(--t-fast) var(--ease-in); }
 
-.toast-enter-from,
-.toast-leave-to { opacity: 0; transform: translateY(-10px); }
+.toast-enter-from { opacity: 0; transform: translateY(-14px) scale(0.97); }
+.toast-leave-to { opacity: 0; transform: translateY(-8px) scale(0.98); }
 
 /* Соседние уведомления доезжают на место, а не прыгают */
 .toast-leave-active { position: absolute; width: 100%; }
-.toast-move { transition: transform 0.2s ease; }
+.toast-move { transition: transform var(--t) var(--ease); }
 
 @media (max-width: 420px) {
   .power { width: 170px; height: 170px; }
@@ -1223,6 +1332,14 @@ textarea.input {
   pointer-events: none;
 }
 
+/* Настройка сохраняется. Автозапуск создаёт ярлык, блокировка ставит правила
+   в брандмауэре — оба ответа приходят не мгновенно, и без отметки
+   переключатель выглядит переключившимся сам по себе. */
+.setting-row--busy {
+  animation: breathe 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
 .setting-row__label {
   display: flex;
   flex-direction: column;
@@ -1267,7 +1384,7 @@ textarea.input {
   background: var(--btn-lo);
   border: 1px solid var(--line);
   border-radius: 12px;
-  transition: background 0.2s ease, border-color 0.2s ease;
+  transition: background var(--t) var(--ease), border-color var(--t) var(--ease);
 }
 
 .toggle__thumb {
@@ -1278,7 +1395,7 @@ textarea.input {
   height: 18px;
   background: var(--text-dim);
   border-radius: 50%;
-  transition: transform 0.2s ease, background 0.2s ease;
+  transition: transform var(--t) var(--ease-pop), background var(--t) var(--ease);
 }
 
 .toggle input:checked + .toggle__track {

@@ -9,7 +9,12 @@
           </svg>
           Выгрузить
         </button>
-        <button class="btn btn--quiet" title="Загрузить правила из файла" @click="pickFile">
+        <button
+          class="btn btn--quiet"
+          :class="{ 'btn--busy': importing }"
+          title="Загрузить правила из файла"
+          @click="pickFile"
+        >
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 17V5M7 9l5-5 5 5M4 20h16" />
           </svg>
@@ -149,11 +154,13 @@
     <!-- Пустое место объясняем, только когда объяснять есть что. Пока внизу
          стоит строка будущего правила, «ничего не найдено» — это шум: и так
          видно, что такого правила ещё нет. -->
-    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !adding.length" class="muted">
-      {{ rules.length
-        ? 'Ничего не найдено'
-        : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
-    </p>
+    <Transition name="fade">
+      <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !adding.length" class="muted">
+        {{ rules.length
+          ? 'Ничего не найдено'
+          : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
+      </p>
+    </Transition>
   </section>
 </template>
 
@@ -199,6 +206,10 @@ let addingKey = 0
 // switching — идёт смена режима. Служба на ней пересобирает маршруты целиком,
 // и без отметки переключатель выглядит заевшим.
 const switching = ref(false)
+
+// importing — идёт загрузка правил из файла. Их бывает много, и служба
+// применяет весь список разом: без отметки кнопка выглядит не сработавшей.
+const importing = ref(false)
 
 // Правила, которые сейчас удаляются. Удаление идёт не мгновенно: служба
 // пересобирает маршруты и DNS на живом туннеле, и это занимает заметное
@@ -253,6 +264,21 @@ const candidate = computed(
 )
 
 const { groups, loose } = useRuleGroups(rules, sources)
+
+// Набрали то, что уже есть, — подводим к нему. Сказать «оно в списке» мало,
+// когда список не помещается на экран: пользователь верит на слово и ищет
+// глазами то, что можно просто показать.
+watch(existing, rule => {
+  if (!rule) return
+
+  nextTick(() => {
+    const row = document.getElementById(`rule-${rule.id}`)
+    if (!row) return
+
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    row.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'nearest' })
+  })
+})
 
 // Поиск идёт по набранному тексту как есть: набрано правило целиком — в
 // списке останется оно само, набрано «dtel» — всё хозяйство.
@@ -393,6 +419,8 @@ async function onFile(e: Event) {
   target.value = ''
   if (!file) return
 
+  importing.value = true
+
   try {
     const data = JSON.parse(await file.text())
 
@@ -408,6 +436,8 @@ async function onFile(e: Event) {
     emit('notify', `Загружено правил: ${data.rules.length}`, 'ok')
   } catch (err: any) {
     emit('notify', err instanceof SyntaxError ? 'Файл не является корректным JSON' : err.message)
+  } finally {
+    importing.value = false
   }
 }
 

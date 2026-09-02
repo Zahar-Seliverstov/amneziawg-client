@@ -18,7 +18,7 @@
           </svg>
           <span>Автоподключение</span>
         </div>
-        <label class="setting-row">
+        <label class="setting-row" :class="{ 'setting-row--busy': saving }">
           <span class="setting-row__label">
             <span>Автоматическое подключение</span>
             <span class="setting-row__note">При запуске приложения подключаться к конфигурации, выбранной на главном экране</span>
@@ -54,7 +54,7 @@
           </svg>
           <span>Автозапуск</span>
         </div>
-        <label class="setting-row" :class="{ 'setting-row--disabled': !autostart.available }">
+        <label class="setting-row" :class="{ 'setting-row--disabled': !autostart.available, 'setting-row--busy': savingAutostart }">
           <span class="setting-row__label">
             <span>Запускать при входе в систему</span>
             <span class="setting-row__note">
@@ -87,7 +87,7 @@
           <span>Блокировка трафика</span>
           <span class="setting-badge setting-badge--beta">Эксперимент</span>
         </div>
-        <label class="setting-row" :class="{ 'setting-row--disabled': !killSwitch.available }">
+        <label class="setting-row" :class="{ 'setting-row--disabled': !killSwitch.available, 'setting-row--busy': savingKillSwitch }">
           <span class="setting-row__label">
             <span>Не выпускать трафик мимо туннеля</span>
             <span class="setting-row__note">

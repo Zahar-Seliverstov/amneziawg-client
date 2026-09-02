@@ -21,7 +21,11 @@
       @toggle="togglePower"
     />
 
-    <nav class="tabs">
+    <nav class="tabs" :class="`tabs--${tab}`">
+      <!-- Подложка выбранной вкладки переезжает, а не зажигается на новом
+           месте: так переключение читается как движение, а не как мигание. -->
+      <span class="tabs__slider" aria-hidden="true"></span>
+
       <button
         class="tabs__btn"
         :class="{ 'tabs__btn--on': tab === 'configs' }"

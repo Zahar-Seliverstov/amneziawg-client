@@ -34,7 +34,11 @@
           :title="pingTitle"
           @click="refreshPing"
         >
-          {{ pingText }}
+          <!-- Новое число не подменяет прежнее на месте, а сменяет его:
+               подмена цифр читается как дрожание, а не как новый замер. -->
+          <Transition name="fade" mode="out-in">
+            <span :key="pingText">{{ pingText }}</span>
+          </Transition>
         </button>
       </template>
       <template v-else-if="selected">{{ selected.name }}</template>

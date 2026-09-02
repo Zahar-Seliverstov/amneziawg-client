@@ -85,7 +85,9 @@
       </li>
     </TransitionGroup>
 
-    <p v-else class="muted">Нет сохранённых конфигураций</p>
+    <Transition name="fade">
+      <p v-if="!configs.length" class="muted">Нет сохранённых конфигураций</p>
+    </Transition>
 
     <!-- Добавление прямо на странице, без окна поверх -->
     <Transition name="expand">
