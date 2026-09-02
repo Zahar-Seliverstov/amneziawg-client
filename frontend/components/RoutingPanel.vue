@@ -25,7 +25,7 @@
       </span>
     </div>
 
-    <div class="choice">
+    <div class="choice" :class="{ 'choice--pending': switching }">
       <label
         v-for="mode in modes"
         :key="mode.value"
@@ -85,11 +85,14 @@
 
     <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
          что именно добавится и каким видом, ещё до нажатия. -->
-    <ul v-if="candidate" class="rules rules--new">
-      <li class="row">
-        <span class="tag" :class="`tag--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
-        <span class="row__value">{{ draft.value }}</span>
-        <button class="btn btn--accent row__add" :disabled="adding" @click="addRule">
+    <ul v-if="pending || candidate" class="rules rules--new">
+      <li class="row" :class="{ 'row--pending': pending }">
+        <span class="tag" :class="`tag--${(pending || draft).type}`">
+          {{ ruleTypeLabel((pending || draft).type!) }}
+        </span>
+        <span class="row__value">{{ (pending || draft).value }}</span>
+        <span v-if="pending" class="row__note">добавляем…</span>
+        <button v-else class="btn btn--accent row__add" @click="addRule">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           Добавить
         </button>
@@ -139,7 +142,7 @@
     <!-- Пустое место объясняем, только когда объяснять есть что. Пока внизу
          стоит строка будущего правила, «ничего не найдено» — это шум: и так
          видно, что такого правила ещё нет. -->
-    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate" class="muted">
+    <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !pending" class="muted">
       {{ rules.length
         ? 'Ничего не найдено'
         : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
@@ -149,6 +152,7 @@
 
 <script setup lang="ts">
 import type { RoutingConfig, RoutingMode } from '~/composables/useApi'
+import type { RuleDraft } from '~/composables/useRuleDraft'
 
 // Правила маршрутизации: режим, поле поиска-добавления и список.
 //
@@ -171,7 +175,15 @@ const routing = ref<RoutingConfig | null>(null)
 const sources = ref<Record<string, string>>({})
 
 const input = ref('')
-const adding = ref(false)
+
+// pending — правило, которое сейчас добавляется. Хранится целиком, а не
+// флагом: пока идёт запрос, в поле можно набрать что-то другое, и строка
+// обязана показывать то, что действительно уходит в службу.
+const pending = ref<RuleDraft | null>(null)
+
+// switching — идёт смена режима. Служба на ней пересобирает маршруты целиком,
+// и без отметки переключатель выглядит заевшим.
+const switching = ref(false)
 
 // Правила, которые сейчас удаляются. Удаление идёт не мгновенно: служба
 // пересобирает маршруты и DNS на живом туннеле, и это занимает заметное
@@ -268,19 +280,26 @@ async function loadSources() {
 }
 
 async function setMode(mode: RoutingMode) {
+  switching.value = true
+
   try {
     await api.setRoutingMode(mode)
   } catch (e: any) {
     emit('notify', e.message)
   }
+
   await load()
+  switching.value = false
 }
 
+// Добавление идёт не мгновенно: служба пересобирает маршруты и DNS на живом
+// туннеле. Строка будущего правила на это время остаётся на месте и говорит,
+// что происходит, — иначе нажатие выглядит пропавшим и кнопку жмут снова.
 async function addRule() {
-  if (draft.value.kind !== 'ready' || existing.value || adding.value) return
+  if (draft.value.kind !== 'ready' || existing.value || pending.value) return
 
   const { type, value } = draft.value
-  adding.value = true
+  pending.value = draft.value
 
   try {
     await api.addRoutingRule(type!, value!)
@@ -292,7 +311,7 @@ async function addRule() {
   } catch (e: any) {
     emit('notify', e.message)
   } finally {
-    adding.value = false
+    pending.value = null
   }
 }
 
@@ -310,7 +329,7 @@ async function deleteRule(id: string) {
   } catch (e: any) {
     emit('notify', e.message)
   } finally {
-    removing.value = removing.value.filter(pending => pending !== id)
+    removing.value = removing.value.filter(waiting => waiting !== id)
   }
 }
 

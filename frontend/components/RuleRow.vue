@@ -1,5 +1,5 @@
 <template>
-  <li class="row" :class="{ 'row--match': matched, 'row--removing': removing }">
+  <li class="row" :class="{ 'row--match': matched, 'row--pending row--removing': removing }">
     <span class="tag" :class="`tag--${rule.type}`">{{ ruleTypeLabel(rule.type) }}</span>
     <span class="row__value">{{ rule.value }}</span>
     <span v-if="removing" class="row__note">удаляем…</span>
