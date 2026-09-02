@@ -81,7 +81,9 @@
 
     </div>
 
-    <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
+    <Transition name="fade">
+      <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
+    </Transition>
 
     <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
          что именно добавится и каким видом, ещё до нажатия. -->
@@ -89,7 +91,7 @@
          и то, что набрано в поле. Отдельным блоком над списком — добавляемое
          правило живёт своей жизнью, а поле в этот момент уже свободно и ждёт
          следующего. -->
-    <TransitionGroup v-if="adding.length || candidate" tag="ul" name="rule" class="rules rules--new">
+    <TransitionGroup v-if="adding.length || candidate" tag="ul" name="list" class="rules rules--new">
       <li v-for="item in adding" :key="item.key" class="row row--adding">
         <span class="tag" :class="`tag--${item.type}`">{{ ruleTypeLabel(item.type) }}</span>
         <span class="row__value">{{ item.value }}</span>
@@ -108,34 +110,32 @@
 
     <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
          адрес того же сервера — это одна запись в голове пользователя. -->
-    <div
-      v-for="group in visibleGroups"
-      :key="group.source"
-      class="group"
-    >
-      <div class="group__head">
-        <span class="group__dot" aria-hidden="true"></span>
-        <span class="group__name">{{ group.source }}</span>
-        <span class="group__count">
-          {{ group.visible.length === group.rules.length
-            ? group.rules.length
-            : `${group.visible.length} из ${group.rules.length}` }}
-        </span>
+    <TransitionGroup name="list">
+      <div v-for="group in visibleGroups" :key="group.source" class="group">
+        <div class="group__head">
+          <span class="group__dot" aria-hidden="true"></span>
+          <span class="group__name">{{ group.source }}</span>
+          <span class="group__count">
+            {{ group.visible.length === group.rules.length
+              ? group.rules.length
+              : `${group.visible.length} из ${group.rules.length}` }}
+          </span>
+        </div>
+
+        <TransitionGroup tag="ul" name="list" class="rules group__list">
+          <RuleRow
+            v-for="rule in group.visible"
+            :key="rule.id"
+            :rule="rule"
+            :matched="rule.id === existing?.id"
+            :removing="removing.includes(rule.id)"
+            @delete="deleteRule"
+          />
+        </TransitionGroup>
       </div>
+    </TransitionGroup>
 
-      <TransitionGroup tag="ul" name="rule" class="rules group__list">
-        <RuleRow
-          v-for="rule in group.visible"
-          :key="rule.id"
-          :rule="rule"
-          :matched="rule.id === existing?.id"
-          :removing="removing.includes(rule.id)"
-          @delete="deleteRule"
-        />
-      </TransitionGroup>
-    </div>
-
-    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="rule" class="rules">
+    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="list" class="rules">
       <RuleRow
         v-for="rule in visibleLoose"
         :key="rule.id"

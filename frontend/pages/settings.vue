@@ -11,7 +11,7 @@
 
     <section class="section">
       <!-- Автоподключение -->
-      <div class="setting-group">
+      <div class="setting-group rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 12.55a11 11 0 0 1 14 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" />
@@ -47,7 +47,7 @@
       </div>
 
       <!-- Автозапуск -->
-      <div class="setting-group">
+      <div class="setting-group rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0" />
@@ -78,7 +78,7 @@
       </div>
 
       <!-- Блокировка трафика мимо туннеля -->
-      <div class="setting-group">
+      <div class="setting-group rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="11" width="18" height="11" rx="2" />
@@ -111,7 +111,7 @@
       <!-- Оформление и язык: сделаны, но ещё не работают. Показываем
            выключенными, а не прячем — так видно, что они запланированы, и
            их не приходится искать в следующей версии заново. -->
-      <div class="setting-group setting-group--soon">
+      <div class="setting-group setting-group--soon rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9" />
@@ -129,7 +129,7 @@
         </div>
       </div>
 
-      <div class="setting-group setting-group--soon">
+      <div class="setting-group setting-group--soon rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9" />
@@ -148,7 +148,7 @@
       </div>
 
       <!-- Информация о приложении -->
-      <div class="setting-group">
+      <div class="setting-group rise">
         <div class="setting-group__header">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10" />

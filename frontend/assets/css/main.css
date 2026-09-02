@@ -684,16 +684,96 @@ body {
   pointer-events: none;
 }
 
-/* Появление и уход строки. Список меняется от действий пользователя, и без
-   перехода правило исчезает рывком — в тот же миг, когда служба наконец
-   ответила, то есть через секунду после нажатия. */
-.rule-enter-active,
-.rule-leave-active { transition: opacity 0.18s ease; }
+/* ─── Движение ────────────────────────────────────────────────────────────
 
-.rule-enter-from,
-.rule-leave-to { opacity: 0; }
+   Одно правило на всё приложение: то, что появилось или исчезло по воле
+   пользователя, не должно возникать и пропадать рывком — иначе непонятно,
+   что именно изменилось. Длительности короткие (0.15–0.25 с): анимация здесь
+   объясняет перемену, а не развлекает, и ждать её никто не должен.
 
-.rule-move { transition: transform 0.2s ease; }
+   Имена переходов общие, потому что и движение общее: список правил и список
+   конфигураций меняются одинаково, и выглядеть это должно одинаково. */
+
+/* Строка списка: появилась, ушла, подвинулась. */
+.list-enter-active,
+.list-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
+
+.list-enter-from,
+.list-leave-to { opacity: 0; transform: translateY(-4px); }
+
+.list-move { transition: transform 0.2s ease; }
+
+/* Появление и исчезновение на месте: подписи, метки, пояснения. */
+.fade-enter-active,
+.fade-leave-active { transition: opacity 0.16s ease; }
+
+.fade-enter-from,
+.fade-leave-to { opacity: 0; }
+
+/* Смена раздела по вкладке. out-in: разделы разной высоты, и показывать их
+   одновременно значит дёргать страницу. */
+.tab-enter-active,
+.tab-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+
+.tab-enter-from { opacity: 0; transform: translateX(6px); }
+.tab-leave-to   { opacity: 0; transform: translateX(-6px); }
+
+/* Переход между страницами — теми же 0.15 с, только без сдвига вбок:
+   настройки и главный экран не соседи в ряду, а разные места. */
+.page-enter-active,
+.page-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+
+.page-enter-from { opacity: 0; transform: translateY(6px); }
+.page-leave-to   { opacity: 0; transform: translateY(-6px); }
+
+/* Раскрытие: форма правки внутри карточки, форма добавления под списком.
+   Высота содержимого заранее неизвестна, поэтому едет не она, а доля строки
+   грида — единственный способ анимировать «сколько получится» без замеров
+   в JavaScript. */
+.expand {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.22s ease, opacity 0.22s ease;
+}
+
+.expand > * { overflow: hidden; }
+
+.expand-enter-from,
+.expand-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+/* Появление блока настроек при открытии страницы: сверху вниз, с небольшим
+   запаздыванием друг за другом. Задержки короткие — это не представление, а
+   подсказка о порядке чтения. */
+.rise {
+  animation: rise 0.28s ease both;
+}
+
+.rise:nth-child(2) { animation-delay: 0.04s; }
+.rise:nth-child(3) { animation-delay: 0.08s; }
+.rise:nth-child(4) { animation-delay: 0.12s; }
+.rise:nth-child(5) { animation-delay: 0.16s; }
+.rise:nth-child(6) { animation-delay: 0.2s; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Кому движение мешает — тому его не будет. Состояния, которые анимация
+   показывает (идёт запрос, правило уходит), везде подписаны словами, так что
+   без неё ничего не теряется. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 .row__note {
   flex-shrink: 0;

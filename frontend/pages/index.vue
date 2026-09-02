@@ -38,17 +38,21 @@
       </button>
     </nav>
 
-    <ConfigList
-      v-if="tab === 'configs'"
-      :configs="configs"
-      :selected-id="selectedId"
-      :status="status"
-      @select="selectConfig"
-      @changed="load"
-      @notify="notify"
-    />
+    <!-- out-in: разделы разной высоты, и показывать их одновременно значит
+         дёргать страницу. -->
+    <Transition name="tab" mode="out-in">
+      <ConfigList
+        v-if="tab === 'configs'"
+        :configs="configs"
+        :selected-id="selectedId"
+        :status="status"
+        @select="selectConfig"
+        @changed="load"
+        @notify="notify"
+      />
 
-    <RoutingPanel v-else @notify="notify" />
+      <RoutingPanel v-else @notify="notify" />
+    </Transition>
 
     <ToastStack :toasts="toasts" @dismiss="dismiss" />
   </div>

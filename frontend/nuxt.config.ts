@@ -17,6 +17,10 @@ export default defineNuxtConfig({
   ssr: false,
 
   app: {
+    // Переход между главным экраном и настройками. out-in: страницы разной
+    // высоты, и показывать их одновременно значит дёргать окно.
+    pageTransition: { name: 'page', mode: 'out-in' },
+
     head: {
       title: 'AWG Client',
       meta: [

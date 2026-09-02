@@ -2,20 +2,22 @@
   <!-- Пока служба поднимается, окно уже открыто и показывает ожидание:
        пользователь в это время вводит пароль в диалоге polkit, и пустое
        окно выглядело бы как зависшее приложение. -->
-  <div v-if="boot.state !== 'ready'" class="boot" :class="{ failed: boot.state === 'failed' }">
-    <div class="box">
-      <span class="logo" aria-hidden="true" />
-      <h1>{{ boot.state === 'failed' ? 'Не удалось запустить службу' : 'Запуск службы AmneziaWG…' }}</h1>
-      <p>
-        {{ boot.state === 'failed'
-          ? 'Окно можно закрыть и попробовать снова.'
-          : 'Подтвердите права администратора — они нужны для TUN-интерфейса и маршрутов.' }}
-      </p>
-      <pre v-if="boot.state === 'failed'">{{ boot.message }}</pre>
+  <Transition name="page" mode="out-in">
+    <div v-if="boot.state !== 'ready'" class="boot" :class="{ failed: boot.state === 'failed' }">
+      <div class="box">
+        <span class="logo" aria-hidden="true" />
+        <h1>{{ boot.state === 'failed' ? 'Не удалось запустить службу' : 'Запуск службы AmneziaWG…' }}</h1>
+        <p>
+          {{ boot.state === 'failed'
+            ? 'Окно можно закрыть и попробовать снова.'
+            : 'Подтвердите права администратора — они нужны для TUN-интерфейса и маршрутов.' }}
+        </p>
+        <pre v-if="boot.state === 'failed'">{{ boot.message }}</pre>
+      </div>
     </div>
-  </div>
 
-  <NuxtPage v-else />
+    <NuxtPage v-else />
+  </Transition>
 </template>
 
 <script setup lang="ts">

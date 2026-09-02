@@ -11,7 +11,11 @@
           <path d="M12 3v9" />
           <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
         </svg>
-        <span class="power__label">{{ statusText }}</span>
+        <!-- Подпись меняется вместе с состоянием: подмена текста на месте
+             читается как подёргивание, а короткое затухание — как переход. -->
+        <Transition name="fade" mode="out-in">
+          <span :key="statusText" class="power__label">{{ statusText }}</span>
+        </Transition>
         <span v-if="isConnected && status?.connected_at" class="power__time">
           {{ duration }}
         </span>
@@ -39,17 +43,21 @@
 
     <!-- Причина отказа. Без неё на экране оставалось одно слово «Ошибка»,
          и понять, что случилось, можно было только из системного лога. -->
-    <p v-if="connectionError" class="power__error">{{ connectionError }}</p>
+    <Transition name="fade">
+      <p v-if="connectionError" class="power__error">{{ connectionError }}</p>
+    </Transition>
 
     <!-- Блокировка. Показываем именно во время разрыва: только так видно,
          что трафик закрыт, а не утекает открытым, пока идёт восстановление. -->
-    <p v-if="killSwitchActive" class="power__guard">
-      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-      Трафик мимо туннеля заблокирован
-    </p>
+    <Transition name="fade">
+      <p v-if="killSwitchActive" class="power__guard">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+        Трафик мимо туннеля заблокирован
+      </p>
+    </Transition>
   </div>
 </template>
 

@@ -8,7 +8,7 @@
       </button>
     </div>
 
-    <ul v-if="configs.length" class="list">
+    <TransitionGroup v-if="configs.length" tag="ul" name="list" class="list">
       <li
         v-for="cfg in configs"
         :key="cfg.id"
@@ -28,9 +28,11 @@
 
           <span class="row__name">{{ cfg.name }}</span>
 
-          <span v-if="isConnected && status?.config_id === cfg.id" class="tag tag--on">
-            активна
-          </span>
+          <Transition name="fade">
+            <span v-if="isConnected && status?.config_id === cfg.id" class="tag tag--on">
+              активна
+            </span>
+          </Transition>
 
           <button
             class="icon-btn"
@@ -60,50 +62,58 @@
 
         <!-- Правка раскрывается прямо в строке: сразу видно, какой конфиг
              меняешь, и незачем искать форму где-то под списком -->
-        <div v-if="editingId === cfg.id" class="card__body">
-          <div class="field">
-            <label>Название</label>
-            <input v-model="editName" type="text" class="input" placeholder="Возьмём из адреса сервера" />
-          </div>
+        <Transition name="expand">
+          <div v-if="editingId === cfg.id" class="expand">
+            <div class="card__body">
+              <div class="field">
+                <label>Название</label>
+                <input v-model="editName" type="text" class="input" placeholder="Возьмём из адреса сервера" />
+              </div>
 
-          <div class="field">
-            <label>Содержимое .conf файла</label>
-            <textarea v-model="editContent" class="input input--mono"></textarea>
-          </div>
+              <div class="field">
+                <label>Содержимое .conf файла</label>
+                <textarea v-model="editContent" class="input input--mono"></textarea>
+              </div>
 
-          <div class="form__actions">
-            <button class="btn" @click="cancelEdit">Отмена</button>
-            <button class="btn btn--accent" @click="saveEdit">Сохранить</button>
+              <div class="form__actions">
+                <button class="btn" @click="cancelEdit">Отмена</button>
+                <button class="btn btn--accent" @click="saveEdit">Сохранить</button>
+              </div>
+            </div>
           </div>
-        </div>
+        </Transition>
       </li>
-    </ul>
+    </TransitionGroup>
 
     <p v-else class="muted">Нет сохранённых конфигураций</p>
 
     <!-- Добавление прямо на странице, без окна поверх -->
-    <div v-if="adding" class="form">
-      <h3 class="form__title">Новая конфигурация</h3>
+    <Transition name="expand">
+      <div v-if="adding" class="expand">
+        <div class="form">
+          <h3 class="form__title">Новая конфигурация</h3>
 
-      <div class="field">
-        <label>Название <span class="field__note">необязательно</span></label>
-        <input v-model="newName" type="text" class="input" placeholder="Возьмём из адреса сервера" />
-      </div>
+          <div class="field">
+            <label>Название <span class="field__note">необязательно</span></label>
+            <input v-model="newName" type="text" class="input" placeholder="Возьмём из адреса сервера" />
+          </div>
 
-      <div class="field">
-        <label>Содержимое .conf файла</label>
-        <textarea
-          v-model="newContent"
-          class="input input--mono"
-          placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.0.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = server:51820&#10;AllowedIPs = 0.0.0.0/0"
-        ></textarea>
-      </div>
+          <div class="field">
+            <label>Содержимое .conf файла</label>
+            <textarea
+              v-model="newContent"
+              class="input input--mono"
+              placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.0.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = server:51820&#10;AllowedIPs = 0.0.0.0/0"
+            ></textarea>
+          </div>
 
-      <div class="form__actions">
-        <button class="btn" @click="cancelAdd">Отмена</button>
-        <button class="btn btn--accent" @click="saveNew">Сохранить</button>
+          <div class="form__actions">
+            <button class="btn" @click="cancelAdd">Отмена</button>
+            <button class="btn btn--accent" @click="saveNew">Сохранить</button>
+          </div>
+        </div>
       </div>
-    </div>
+    </Transition>
   </section>
 </template>
 
