@@ -86,7 +86,7 @@ func main() {
 	socket := resolveSocketPath(*socketPath, resolvedPath)
 
 	// Load configuration
-	appConfig := config.NewAppConfig(resolvedPath)
+	appConfig := config.NewAppConfig(resolvedPath, owner)
 	if err := appConfig.Load(); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -133,23 +133,24 @@ func resolveSocketPath(socketPath, configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "api.sock")
 }
 
-// resolveConfigPath доводит путь конфига до пригодного к использованию:
-// подставляет значение по умолчанию и создаёт каталог.
+// resolveConfigPath подставляет путь конфига по умолчанию.
+//
+// Каталог здесь намеренно не создаётся. Служба работает от root, а созданный
+// ею каталог принадлежал бы root — и заодно сбивал бы desktopuser.Resolve,
+// для которого владелец каталога настроек служит подсказкой о том, чей это
+// рабочий стол. Каталог создают те, кто кладёт в него файлы: сохранение
+// настроек и открытие сокета, — и оба сразу передают его пользователю.
 func resolveConfigPath(path string) (string, error) {
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("не удалось определить домашний каталог: %w", err)
-		}
-		path = filepath.Join(home, ".config", "awg-client", "config.json")
+	if path != "" {
+		return path, nil
 	}
 
-	// 0700: внутри лежат приватные ключи всех подключений.
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", fmt.Errorf("не удалось создать каталог настроек: %w", err)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("не удалось определить домашний каталог: %w", err)
 	}
 
-	return path, nil
+	return filepath.Join(home, ".config", "awg-client", "config.json"), nil
 }
 
 // autoconnect подключается к конфигу, выбранному на главном экране.

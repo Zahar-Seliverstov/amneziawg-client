@@ -11,6 +11,7 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/desktopuser"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
@@ -109,7 +110,7 @@ func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
 	t.Helper()
 	dir := t.TempDir()
 
-	appCfg := config.NewAppConfig(filepath.Join(dir, "config.json"))
+	appCfg := config.NewAppConfig(filepath.Join(dir, "config.json"), desktopuser.User{})
 	for _, c := range cfgs {
 		appCfg.AddConfig(c)
 	}

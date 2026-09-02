@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/user/amnezia-web-client/internal/desktopuser"
 )
 
 const sampleConfig = `[Interface]
@@ -22,7 +24,7 @@ AllowedIPs = 0.0.0.0/0
 
 func newStore(t *testing.T) *AppConfig {
 	t.Helper()
-	return NewAppConfig(filepath.Join(t.TempDir(), "config.json"))
+	return NewAppConfig(filepath.Join(t.TempDir(), "config.json"), desktopuser.User{})
 }
 
 func addSample(t *testing.T, store *AppConfig, name string) AmneziaWGConfig {
@@ -83,7 +85,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded := NewAppConfig(store.Path())
+	loaded := NewAppConfig(store.Path(), desktopuser.User{})
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}

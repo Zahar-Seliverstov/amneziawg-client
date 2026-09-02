@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/user/amnezia-web-client/internal/desktopuser"
 )
 
 // appState — ровно то, что лежит в config.json.
@@ -64,12 +66,18 @@ type AppConfig struct {
 	// configPath задаётся при создании и больше не меняется, поэтому читается
 	// без блокировки.
 	configPath string
+
+	// owner — пользователь рабочего стола. Служба работает от root, а
+	// config.json лежит в доме пользователя: без передачи владения файл с
+	// его же ключами остался бы для него недоступным.
+	owner desktopuser.User
 }
 
 // NewAppConfig creates a new application configuration
-func NewAppConfig(configPath string) *AppConfig {
+func NewAppConfig(configPath string, owner desktopuser.User) *AppConfig {
 	return &AppConfig{
 		configPath: configPath,
+		owner:      owner,
 		state: appState{
 			Configs: []AmneziaWGConfig{},
 			Routing: RoutingConfig{
@@ -121,6 +129,12 @@ func (c *AppConfig) Load() error {
 // восстановить которые больше неоткуда.
 func (c *AppConfig) quarantine(cause error) error {
 	backup := fmt.Sprintf("%s.corrupt-%s", c.configPath, time.Now().Format("20060102-150405"))
+
+	// Владельца переносим и на отодвинутый файл: разбирать его руками и
+	// вытаскивать ключи будет пользователь, а не root.
+	if err := c.owner.Own(c.configPath); err != nil {
+		log.Printf("Не удалось передать повреждённый файл настроек пользователю: %v", err)
+	}
 
 	if err := os.Rename(c.configPath, backup); err != nil {
 		// Отодвинуть не вышло — дальше идти нельзя: следующее же сохранение
@@ -206,7 +220,11 @@ func (c *AppConfig) Save() error {
 		return err
 	}
 
-	return writeFileAtomic(c.configPath, data, 0600)
+	if err := c.owner.Own(filepath.Dir(c.configPath)); err != nil {
+		return err
+	}
+
+	return writeFileAtomic(c.configPath, data, 0600, c.owner)
 }
 
 // writeFileAtomic записывает файл так, что читатель видит либо прежнее
@@ -217,7 +235,12 @@ func (c *AppConfig) Save() error {
 // конфигураций вместе с приватными ключами. Сохраняем во временный файл в том
 // же каталоге, сбрасываем на диск и переименовываем — переименование в
 // пределах файловой системы неделимо.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+//
+// Владельца выставляем до переименования: под готовым именем файл обязан
+// появиться сразу правильным, иначе между rename и chown он на мгновение
+// принадлежит root — и падение в этот зазор оставляет пользователя без
+// доступа к собственным ключам.
+func writeFileAtomic(path string, data []byte, perm os.FileMode, owner desktopuser.User) error {
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
@@ -252,6 +275,10 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if err := owner.Own(tmpName); err != nil {
+		return err
+	}
+
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
