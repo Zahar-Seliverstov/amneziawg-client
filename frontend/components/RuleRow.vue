@@ -4,7 +4,7 @@
     class="row"
     :class="{ 'row--match': matched, 'row--pending row--removing': removing }"
   >
-    <span class="tag" :class="`tag--${rule.type}`">{{ ruleTypeLabel(rule.type) }}</span>
+    <span class="type" :class="`type--${rule.type}`">{{ ruleTypeLabel(rule.type) }}</span>
     <span class="row__value">{{ rule.value }}</span>
     <span v-if="removing" class="row__note">удаляем…</span>
     <span v-else-if="matched" class="row__note">уже есть</span>

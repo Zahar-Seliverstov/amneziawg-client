@@ -39,13 +39,13 @@
      состояние: адрес, подсеть, домен и зона ведут себя по-разному, и в
      списке из полусотни записей вид должен читаться раньше значения.
      Оттенки взяты в стороне от зелёного, янтарного и красного — иначе метка
-     читалась бы как «подключено» или «ошибка», — но приглушать их не нужно:
-     метка размером в четыре буквы, и различать её виды надо с одного
-     взгляда, не вчитываясь. */
-  --type-ip:     #58a6ff;
-  --type-cidr:   #bc8cff;
-  --type-domain: #3fd8c2;
-  --type-zone:   #ff8ab4;
+     читалась бы как «подключено» или «ошибка», — и приглушены до яркости
+     обычного текста: их дело — различать соседние строки, а не спорить с
+     самими правилами. */
+  --type-ip:     #7d9ec7;
+  --type-cidr:   #a08fc4;
+  --type-domain: #6bb0a4;
+  --type-zone:   #c58fa0;
 
   --r:           12px;
   --r-sm:        9px;
@@ -575,7 +575,6 @@ body {
   letter-spacing: 0.04em;
   color: var(--text-dim);
   background: var(--surface-2);
-  border: 1px solid var(--line-soft);
   padding: 3px 8px;
   border-radius: 6px;
 }
@@ -583,78 +582,38 @@ body {
 .tag--on {
   color: #7cd6a0;
   background: rgba(52, 167, 101, 0.12);
-  border-color: rgba(52, 167, 101, 0.3);
 }
 
-/* Вид правила — цветом: в длинном списке он должен читаться раньше значения.
-   Прозрачности заданы числами, а не через переменную: цвет метки и её фон
-   разной насыщенности, и вывести одно из другого в CSS нечем. */
-.tag--ip {
-  color: var(--type-ip);
-  background: rgba(88, 166, 255, 0.15);
-  border-color: rgba(88, 166, 255, 0.35);
+/* Вид правила — словом и цветом, без плашки: полсотни обведённых меток
+   подряд дают рябь, а разделять строки должен список, а не рамка вокруг
+   каждой метки. Ширина у всех одна, поэтому значения стоят в столбец. */
+.type {
+  flex-shrink: 0;
+  min-width: 54px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
 }
 
-.tag--cidr {
-  color: var(--type-cidr);
-  background: rgba(188, 140, 255, 0.15);
-  border-color: rgba(188, 140, 255, 0.35);
-}
-
-.tag--domain {
-  color: var(--type-domain);
-  background: rgba(63, 216, 194, 0.15);
-  border-color: rgba(63, 216, 194, 0.35);
-}
-
-.tag--zone {
-  color: var(--type-zone);
-  background: rgba(255, 138, 180, 0.15);
-  border-color: rgba(255, 138, 180, 0.35);
-}
+.type--ip     { color: var(--type-ip); }
+.type--cidr   { color: var(--type-cidr); }
+.type--domain { color: var(--type-domain); }
+.type--zone   { color: var(--type-zone); }
 
 /* ─── Группы правил ───────────────────────────────────────────────────────
 
    Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и адрес
-   того же сервера — это одна запись в голове пользователя. Группа появляется
-   от двух правил: одинокая запись под собственным заголовком — это тот же
-   список, только вдвое длиннее.
+   того же сервера — это одна запись в голове пользователя.
 
-   Цвета у групп нет: цветом помечен вид правила, и второй цветовой признак
-   рядом читался бы как путаница. Группу держат заголовок и полоса слева. */
+   Названия у группы нет: имя хозяйства и так стоит в каждой её строке, и
+   повторять его заголовком — значит писать одно и то же дважды. Группу
+   держат отдельный блок и полоса слева. */
 .group { margin-bottom: 12px; }
 
-.group__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 2px 6px;
-}
-
-.group__dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-
-.group__name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-dim);
-}
-
-.group__count {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-/* Полоса слева связывает строки в одно целое: одного заголовка мало, когда
-   групп несколько подряд. */
 /* Левая грань блока — это и есть полоса группы: заметно светлее остальной
-   рамки и вдвое толще. Отдельной линии рядом с рамкой не нужно, а связь
-   строк с заголовком видно так же. */
+   рамки и вдвое толще. */
 .group__list {
   border-left: 2px solid #3d444f;
 }
@@ -683,8 +642,13 @@ body {
 
 /* Блок над списком: правила, которые сейчас добавляются, и то, что набрано
    в поле. Стоит перед списком, потому что читается как его продолжение, а не
-   как часть поля ввода. */
+   как часть поля ввода. Пустым его не видно, но и не выкинуть: убери блок
+   целиком — уходящей строке будет негде доиграть. */
 .rules--new { margin-bottom: 8px; }
+
+.rules--new:empty {
+  display: none;
+}
 
 .row__add {
   flex-shrink: 0;
@@ -759,35 +723,29 @@ body {
    Имена переходов общие, потому что и движение общее: список правил и список
    конфигураций меняются одинаково, и выглядеть это должно одинаково. */
 
-/* Строка списка. Появляется сверху и на месте замедляется; уходит иначе —
-   складывается по высоте и уезжает влево, а соседи занимают её место сами,
-   без прыжка. Схлопывать высоту важнее, чем гасить: пока строка держит
-   место, список после удаления дёргается целиком. */
-.list-enter-active { transition: opacity var(--t) var(--ease-out), transform var(--t) var(--ease-out); }
-
-.list-enter-from { opacity: 0; transform: translateY(-6px) scale(0.99); }
-
+/* Строка списка. Появляется и уходит одинаково: раскрывается и схлопывается
+   по своей высоте, а соседи доезжают на место сами. Высоту ставит
+   useCollapse — CSS не умеет переходить от height: auto, а взятая на глаз
+   max-height даёт ровно то, чего мы не хотим: строка сперва стоит на месте и
+   только под конец падает. Одна длительность на все свойства: строка должна
+   уходить одним движением, а не разъезжаться по частям. */
+.list-enter-active,
 .list-leave-active {
   overflow: hidden;
-  max-height: 120px;
   transition:
-    opacity var(--t-fast) var(--ease-in),
-    transform var(--t) var(--ease-in),
-    max-height var(--t-slow) var(--ease),
-    padding-top var(--t-slow) var(--ease),
-    padding-bottom var(--t-slow) var(--ease),
-    border-bottom-width var(--t-slow) var(--ease),
-    margin-bottom var(--t-slow) var(--ease);
+    opacity var(--t) var(--ease),
+    height var(--t) var(--ease),
+    padding-top var(--t) var(--ease),
+    padding-bottom var(--t) var(--ease),
+    border-bottom-width var(--t) var(--ease),
+    margin-bottom var(--t) var(--ease);
 }
 
+.list-enter-from,
 .list-leave-to {
   opacity: 0;
-  max-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
   border-bottom-width: 0;
   margin-bottom: 0;
-  transform: translateX(-10px);
 }
 
 .list-move { transition: transform var(--t) var(--ease); }
@@ -1181,16 +1139,15 @@ textarea.input {
   gap: 8px;
 }
 
-/* Вид как у прежней полосы: тонкая рамка и текст одного цвета, без цветной
-   планки сбоку — она выбивалась из общего строя. Заливка непрозрачная:
-   уведомление висит поверх списка, и просвечивающий текст под ним мешал
-   читать само сообщение. Цвета — те же тона, уже смешанные с --surface. */
+/* Сплошная плашка и текст одного цвета, без рамки и без цветной планки
+   сбоку: уведомление и так стоит поверх всего, обводить его незачем.
+   Заливка непрозрачная — просвечивающий сквозь неё список мешал читать
+   само сообщение. Цвета — те же тона, уже смешанные с --surface. */
 .toast {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 11px 8px 11px 14px;
-  border: 1px solid;
   border-radius: var(--r-sm);
   font-size: 14px;
   line-height: 1.4;
@@ -1198,14 +1155,12 @@ textarea.input {
 }
 
 .toast--error {
-  background: #342225;
-  border-color: #7a3937;
+  background: #3a2528;
   color: #f0918b;
 }
 
 .toast--ok {
-  background: #1b2f29;
-  border-color: #266544;
+  background: #1d332c;
   color: #7cd6a0;
 }
 

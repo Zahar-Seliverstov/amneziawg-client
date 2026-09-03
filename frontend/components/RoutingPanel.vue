@@ -90,21 +90,24 @@
       <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
     </Transition>
 
-    <!-- Будущее правило стоит перед списком и выглядит как его строка: видно,
-         что именно добавится и каким видом, ещё до нажатия. -->
     <!-- Что вот-вот появится в списке: правила, которые сейчас добавляются,
          и то, что набрано в поле. Отдельным блоком над списком — добавляемое
          правило живёт своей жизнью, а поле в этот момент уже свободно и ждёт
-         следующего. -->
-    <TransitionGroup v-if="adding.length || candidate" tag="ul" name="list" class="rules rules--new">
-      <li v-for="item in adding" :key="item.key" class="row row--adding">
-        <span class="tag" :class="`tag--${item.type}`">{{ ruleTypeLabel(item.type) }}</span>
+         следующего.
+
+         Ключ у строки — само значение, поэтому набранное правило и оно же в
+         пути к службе для Vue одна и та же строка: по нажатию «Добавить» она
+         не исчезает и не появляется заново, а на месте меняет кнопку на
+         «добавляем…». -->
+    <TransitionGroup tag="ul" name="list" class="rules rules--new" v-bind="collapse">
+      <li v-for="item in adding" :key="item.value" class="row row--adding">
+        <span class="type" :class="`type--${item.type}`">{{ ruleTypeLabel(item.type) }}</span>
         <span class="row__value">{{ item.value }}</span>
         <span class="row__note">добавляем…</span>
       </li>
 
-      <li v-if="candidate" key="candidate" class="row">
-        <span class="tag" :class="`tag--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
+      <li v-if="candidate" :key="draft.value!" class="row">
+        <span class="type" :class="`type--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
         <span class="row__value">{{ draft.value }}</span>
         <button class="btn btn--accent row__add" @click="addRule">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -115,19 +118,9 @@
 
     <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
          адрес того же сервера — это одна запись в голове пользователя. -->
-    <TransitionGroup name="list">
+    <TransitionGroup name="list" v-bind="collapse">
       <div v-for="group in visibleGroups" :key="group.source" class="group">
-        <div class="group__head">
-          <span class="group__dot" aria-hidden="true"></span>
-          <span class="group__name">{{ group.source }}</span>
-          <span class="group__count">
-            {{ group.visible.length === group.rules.length
-              ? group.rules.length
-              : `${group.visible.length} из ${group.rules.length}` }}
-          </span>
-        </div>
-
-        <TransitionGroup tag="ul" name="list" class="rules group__list">
+        <TransitionGroup tag="ul" name="list" class="rules group__list" v-bind="collapse">
           <RuleRow
             v-for="rule in group.visible"
             :key="rule.id"
@@ -140,7 +133,7 @@
       </div>
     </TransitionGroup>
 
-    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="list" class="rules">
+    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="list" class="rules" v-bind="collapse">
       <RuleRow
         v-for="rule in visibleLoose"
         :key="rule.id"
@@ -195,13 +188,11 @@ const input = ref('')
 // служба возится с предыдущим. Значение хранится целиком — строка обязана
 // показывать то, что действительно ушло в службу, а не то, что сейчас в поле.
 interface AddingRule {
-  key: number
   type: RuleType
   value: string
 }
 
 const adding = ref<AddingRule[]>([])
-let addingKey = 0
 
 // switching — идёт смена режима. Служба на ней пересобирает маршруты целиком,
 // и без отметки переключатель выглядит заевшим.
@@ -350,7 +341,7 @@ async function addRule() {
   if (!candidate.value) return
 
   const { type, value } = draft.value
-  const item: AddingRule = { key: ++addingKey, type: type!, value: value! }
+  const item: AddingRule = { type: type!, value: value! }
 
   adding.value = [...adding.value, item]
   input.value = ''
@@ -366,7 +357,7 @@ async function addRule() {
     // возвращаем его в поле, если пользователь не занял его своим.
     if (!input.value) input.value = item.value
   } finally {
-    adding.value = adding.value.filter(other => other.key !== item.key)
+    adding.value = adding.value.filter(other => other.value !== item.value)
   }
 }
 

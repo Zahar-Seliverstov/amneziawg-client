@@ -8,7 +8,7 @@
       </button>
     </div>
 
-    <TransitionGroup v-if="configs.length" tag="ul" name="list" class="list">
+    <TransitionGroup v-if="configs.length" tag="ul" name="list" class="list" v-bind="collapse">
       <li
         v-for="cfg in configs"
         :key="cfg.id"
