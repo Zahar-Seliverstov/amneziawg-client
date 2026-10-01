@@ -357,77 +357,8 @@ body {
   flex-shrink: 0;
 }
 
-/* ─── Поле правил: поиск и добавление в одном ─────────────────────────────
-
-   Раньше здесь стояли три элемента: выбор типа, поле ввода и кнопка, а
-   отдельно от них — поиск. Тип приходилось выбирать руками, и ошибиться в
-   нём было проще, чем в самом значении. Теперь поле одно: пока набранное не
-   складывается в правило, оно ищет по списку; сложилось — справа появляется
-   вид правила и кнопка. */
-.rule-field {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  /* Высота задана явно и не зависит от того, что внутри: без этого поле
-     подрастало на пару пикселей ровно в тот момент, когда набранное
-     складывалось в правило и справа появлялась кнопка. Список под полем
-     дёргался на каждый такой переход. */
-  min-height: 39px;
-  padding: 0 5px 0 12px;
-  margin-bottom: 8px;
-  background: var(--sunken);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  outline: 1px solid transparent;
-  outline-offset: -2px;
-  transition: border-color var(--t) var(--ease), outline-color var(--t) var(--ease);
-}
-
-.rule-field:focus-within {
-  border-color: #767d89;
-  outline-color: rgba(255, 255, 255, 0.14);
-}
-
-/* Ошибку показывает рамка: подпись под полем объясняет, что не так, а рамка
-   отвечает раньше, чем её прочитают. Готовность рамкой не помечается — о ней
-   говорит строка будущего правила, которая появляется под полем. */
-.rule-field--bad { border-color: rgba(209, 84, 77, 0.45); }
-
-.rule-field--bad:focus-within {
-  border-color: var(--red);
-  outline-color: rgba(209, 84, 77, 0.14);
-}
-
-.rule-field__icon {
-  display: block;
-  flex-shrink: 0;
-  color: var(--text-faint);
-}
-
-.rule-field__input {
-  flex: 1;
-  min-width: 0;
-  padding: 0;
-  line-height: 37px;
-  background: none;
-  border: none;
-  outline: none;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 14px;
-}
-
-.rule-field__input::placeholder { color: var(--text-faint); }
-
-.rule-field__clear {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  color: var(--text-faint);
-}
-
-/* Подпись под полем: что не так с набранным или что такое правило уже есть.
-   Появляется редко, поэтому места под себя не держит. */
+/* Подпись под редактором правил: сколько строк не вступит в силу. Появляется
+   редко, поэтому места под себя не держит. */
 .rule-hint {
   margin: -2px 0 8px;
   padding: 0 2px;
@@ -602,26 +533,18 @@ body {
 .type--domain { color: var(--type-domain); }
 .type--zone   { color: var(--type-zone); }
 
-/* ─── Группы правил ───────────────────────────────────────────────────────
+/* ─── Редактор правил ─────────────────────────────────────────────────────
 
-   Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и адрес
-   того же сервера — это одна запись в голове пользователя.
+   Список правил и есть поле ввода: по правилу на строку, напротив каждой —
+   чем она станет. Раньше здесь было три способа делать одно и то же — поле
+   «поиск и добавление», список со строками-крестиками и отдельное окно для
+   ввода списком; теперь способ один.
 
-   Названия у группы нет: имя хозяйства и так стоит в каждой её строке, и
-   повторять его заголовком — значит писать одно и то же дважды. Группу
-   держат отдельный блок и полоса слева. */
-.group { margin-bottom: 12px; }
-
-/* Левая грань блока — это и есть полоса группы: заметно светлее остальной
-   рамки и вдвое толще. */
-.group__list {
-  border-left: 2px solid #3d444f;
-}
-
-/* Список правил — один блок с волосяными разделителями, а не полсотни
-   одинаковых карточек: отдельные рамки на каждое правило дробят список так,
-   что глазу не за что зацепиться, и занимают вдвое больше места. */
-.rules {
+   Строки — отдельные однострочные поля, а не одна textarea. Метка обязана
+   стоять ровно напротив своей строки, а в textarea длинное значение
+   переносится и уводит всю колонку меток; заодно ошибочную строку не
+   подсветить и не обвести. */
+.lines {
   list-style: none;
   background: var(--surface);
   border: 1px solid var(--line-soft);
@@ -629,83 +552,134 @@ body {
   overflow: hidden;
 }
 
-.rules .row {
-  margin: 0;
-  padding: 9px 12px;
+.line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  /* Место под полосу хозяйства держим всегда: иначе строка сдвигалась бы на
+     два пикселя, стоило соседке оказаться из того же хозяйства. */
+  border-left: 2px solid transparent;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.line:last-child { border-bottom: none; }
+
+.line__input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0;
   background: none;
   border: none;
-  border-bottom: 1px solid var(--line-soft);
-  border-radius: 0;
-}
-
-.rules .row:last-child { border-bottom: none; }
-
-/* Блок над списком: правила, которые сейчас добавляются, и то, что набрано
-   в поле. Стоит перед списком, потому что читается как его продолжение, а не
-   как часть поля ввода. Пустым его не видно, но и не выкинуть: убери блок
-   целиком — уходящей строке будет негде доиграть. */
-.rules--new { margin-bottom: 8px; }
-
-.rules--new:empty {
-  display: none;
-}
-
-.row__add {
-  flex-shrink: 0;
-  height: 30px;
-  padding: 0 12px;
+  outline: none;
+  color: var(--text);
+  /* Моноширинный: список — это столбец адресов и имён, и в пропорциональном
+     шрифте опечатку в них не видно. */
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
   font-size: 13px;
 }
 
-/* Правило, которое пользователь как раз набирает в поле. Отметка нужна,
-   чтобы «такое правило уже есть» не осталось словами: видно, какое именно
-   и где оно лежит. */
-.row--match { background: #1e222a; }
+.line__input::placeholder { color: var(--text-faint); }
 
-/* Строка, по которой идёт запрос: правило добавляется или удаляется. Служба
-   в этот момент пересобирает маршруты и DNS на живом туннеле — это занимает
-   время, и без отметки строка выглядит так, будто нажатие пропало:
-   пользователь жмёт снова. Дыхание — то же самое, каким главная кнопка
-   показывает переходное состояние: одно и то же ожидание должно выглядеть
-   одинаково. */
-.row--pending {
-  animation: breathe 1.2s ease-in-out infinite;
-  pointer-events: none;
+.line:focus-within { background: #1b1f26; }
+
+/* Строка, которая правилом не станет. Красной рамкой, а не только словом:
+   в списке из сотни строк одну ошибочную по метке искать глазами долго. */
+.line--bad {
+  background: rgba(209, 84, 77, 0.07);
+  box-shadow: inset 2px 0 0 var(--red);
 }
 
-/* Зачёркнуто только уходящее: у добавляемого правила жизнь впереди. */
-.row--removing .row__value { text-decoration: line-through; }
+.line--bad .line__mark { color: var(--red); }
 
-/* Правило в пути: служба его принимает, а поле ввода уже свободно. Отсюда и
-   другая анимация — не гаснущее дыхание, как у уходящего, а бегущий по
-   строке отсвет: работа идёт, и её результат появится ниже. */
-.row--adding {
-  position: relative;
-  overflow: hidden;
-  pointer-events: none;
+/* Повтор в силу не вступит, но и ошибкой не является: такое правило уже
+   стоит выше, и всё, что нужно, — это заметить. */
+.line--dup { color: var(--text-dim); }
+
+.line--dup .line__mark { color: var(--text-faint); }
+
+/* Полоса слева: соседние строки одного хозяйства. Заголовка у группы нет —
+   имя хозяйства и так стоит в каждой её строке, и повторять его сверху
+   значило бы писать одно и то же дважды. */
+.line--tied { border-left-color: #3d444f; }
+
+.line__mark {
+  text-align: right;
+  white-space: nowrap;
 }
 
-.row--adding::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.07) 50%,
-    transparent 100%
-  );
-  animation: sweep 1.15s ease-in-out infinite;
+/* Крестик появляется только у непустой строки: убирать пустую нечего, а
+   мышью строка убирается быстрее, чем стиранием посимвольно. */
+.line__drop {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
 }
 
-@keyframes sweep {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(100%); }
+.line:hover .line__drop,
+.line:focus-within .line__drop { opacity: 1; }
+
+/* Строка применения. Пока она не нажата, служба ничего не знает о правках:
+   набор правил меняется целиком и разом, а не по букве. Кнопка показывает,
+   что именно изменится, поэтому нажимают её зная. */
+.apply {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-/* Значения в этой строке приглушены: правило ещё не принято, и выглядеть
-   наравне с уже стоящими в списке оно не должно. */
-.row--adding .row__value { color: var(--text-dim); }
+.apply__count {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* ─── Загруженный файл ждёт решения ──────────────────────────────────────
+
+   Раньше загрузка молча затирала весь список, а сообщение говорило только
+   про загруженное — о потерянном не было ни слова. */
+.pending {
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.pending__text {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.pending__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Красная кнопка — там, где действие уносит уже введённое: замена списка и
+   удаление выбранных. Отдельно от btn--accent намеренно: обе стоят рядом, и
+   различать их по одному только тексту пришлось бы читая. */
+.btn--danger {
+  background: linear-gradient(180deg, #e0645d 0%, var(--red) 100%);
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.btn--danger:active:not(:disabled) {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 2px 5px rgba(0, 0, 0, 0.4);
+}
 
 /* Смена режима тоже применяется на живом туннеле и тоже не мгновенна. */
 .choice--pending {

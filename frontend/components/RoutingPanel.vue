@@ -1,175 +1,145 @@
 <template>
   <section class="section">
     <div class="section__head">
-      <span class="hint">Изменения применяются сразу</span>
+      <span class="hint">
+        {{ dirty ? 'Изменения ещё не применены' : 'Режим применяется сразу, правила — по кнопке' }}
+      </span>
       <span class="section__tools">
+        <button
+          v-if="canOrder"
+          class="btn btn--quiet"
+          title="Поставить рядом правила одного хозяйства"
+          @click="orderBySource"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7h10M4 12h16M4 17h7" />
+          </svg>
+          Упорядочить
+        </button>
         <button class="btn btn--quiet" title="Сохранить правила в файл" @click="exportRules">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3v12M7 11l5 5 5-5M4 20h16" />
           </svg>
           Выгрузить
         </button>
-        <button
-          class="btn btn--quiet"
-          :class="{ 'btn--busy': importing }"
-          title="Загрузить правила из файла"
-          @click="pickFile"
-        >
+        <button class="btn btn--quiet" title="Загрузить правила из файла" @click="pickFile">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 17V5M7 9l5-5 5 5M4 20h16" />
           </svg>
           Загрузить
         </button>
-        <input
-          ref="fileInput"
-          type="file"
-          accept="application/json,.json"
-          hidden
-          @change="onFile"
-        />
+        <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="onFile" />
       </span>
     </div>
 
     <div class="choice" :class="{ 'choice--pending': switching }">
       <label
-        v-for="mode in modes"
-        :key="mode.value"
+        v-for="option in modes"
+        :key="option.value"
         class="choice__item"
-        :class="{ 'choice__item--on': routing?.mode === mode.value }"
+        :class="{ 'choice__item--on': routing?.mode === option.value }"
       >
         <input
           type="radio"
           name="mode"
-          :value="mode.value"
-          :checked="routing?.mode === mode.value"
-          @change="setMode(mode.value)"
+          :value="option.value"
+          :checked="routing?.mode === option.value"
+          @change="setMode(option.value)"
         />
         <span class="mark mark--radio">
-          <svg v-if="routing?.mode === mode.value" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round">
+          <svg v-if="routing?.mode === option.value" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 6 9 17l-5-5" />
           </svg>
         </span>
         <span>
-          <span class="choice__title">{{ mode.title }}</span>
-          <span class="choice__note">{{ mode.note }}</span>
+          <span class="choice__title">{{ option.title }}</span>
+          <span class="choice__note">{{ option.note }}</span>
         </span>
       </label>
     </div>
 
-    <!-- Одно поле на поиск и на добавление: пока набранное не складывается в
-         правило, оно ищет по списку; сложилось — рядом появляется «Добавить».
-         Вид правила виден по самому значению, выбирать его руками не нужно. -->
-    <div class="rule-field" :class="{ 'rule-field--bad': draft.kind === 'invalid' }">
-      <svg class="rule-field__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round">
-        <circle cx="10.5" cy="10.5" r="6.5" />
-        <path d="M20 20l-4.6-4.6" />
-      </svg>
-
-      <input
-        v-model="input"
-        type="text"
-        class="rule-field__input"
-        placeholder="Адрес, подсеть, домен или зона"
-        aria-label="Поиск по правилам и добавление нового"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        @keyup.enter="addRule"
-        @keyup.esc="input = ''"
-      />
-
-      <button v-if="input" class="icon-btn rule-field__clear" aria-label="Очистить" @click="input = ''">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor">
-          <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 12.1-1.4 1.4L12 13.4l-2.1 2.1-1.4-1.4L10.6 12 8.5 9.9l1.4-1.4L12 10.6l2.1-2.1 1.4 1.4L13.4 12z" />
-        </svg>
-      </button>
-
-    </div>
-
+    <!-- Разобранный файл ждёт решения. В поле он ложится текстом и в силу
+         сам по себе не вступает: увидев результат, его ещё можно поправить
+         или отменить, не тронув работающую маршрутизацию. -->
     <Transition name="fade">
-      <p v-if="hint" class="rule-hint" :class="hintClass">{{ hint }}</p>
+      <div v-if="pending" class="pending">
+        <p class="pending__text">
+          В файле {{ pending.name }} — правил: {{ pending.values.length }}.
+          Добавить их к тому, что в поле, или заменить ими всё?
+        </p>
+        <div class="pending__actions">
+          <button class="btn btn--accent" @click="takeFile(false)">Добавить к текущим</button>
+          <button class="btn btn--danger" @click="takeFile(true)">Заменить всё</button>
+          <button class="btn btn--quiet" @click="pending = null">Отмена</button>
+        </div>
+      </div>
     </Transition>
 
-    <!-- Что вот-вот появится в списке: правила, которые сейчас добавляются,
-         и то, что набрано в поле. Отдельным блоком над списком — добавляемое
-         правило живёт своей жизнью, а поле в этот момент уже свободно и ждёт
-         следующего.
-
-         Ключ у строки — само значение, поэтому набранное правило и оно же в
-         пути к службе для Vue одна и та же строка: по нажатию «Добавить» она
-         не исчезает и не появляется заново, а на месте меняет кнопку на
-         «добавляем…». -->
-    <TransitionGroup tag="ul" name="list" class="rules rules--new" v-bind="collapse">
-      <li v-for="item in adding" :key="item.value" class="row row--adding">
-        <span class="type" :class="`type--${item.type}`">{{ ruleTypeLabel(item.type) }}</span>
-        <span class="row__value">{{ item.value }}</span>
-        <span class="row__note">добавляем…</span>
-      </li>
-
-      <li v-if="candidate" :key="draft.value!" class="row">
-        <span class="type" :class="`type--${draft.type}`">{{ ruleTypeLabel(draft.type!) }}</span>
-        <span class="row__value">{{ draft.value }}</span>
-        <button class="btn btn--accent row__add" @click="addRule">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
-          Добавить
-        </button>
-      </li>
-    </TransitionGroup>
-
-    <!-- Правила одного хозяйства стоят вместе: git.dtel.ru, bitrix.dtel.ru и
-         адрес того же сервера — это одна запись в голове пользователя. -->
-    <TransitionGroup name="list" v-bind="collapse">
-      <div v-for="group in visibleGroups" :key="group.source" class="group">
-        <TransitionGroup tag="ul" name="list" class="rules group__list" v-bind="collapse">
-          <RuleRow
-            v-for="rule in group.visible"
-            :key="rule.id"
-            :rule="rule"
-            :matched="rule.id === existing?.id"
-            :removing="removing.includes(rule.id)"
-            @delete="deleteRule"
-          />
-        </TransitionGroup>
-      </div>
-    </TransitionGroup>
-
-    <TransitionGroup v-if="visibleLoose.length" tag="ul" name="list" class="rules" v-bind="collapse">
-      <RuleRow
-        v-for="rule in visibleLoose"
-        :key="rule.id"
-        :rule="rule"
-        :matched="rule.id === existing?.id"
-        :removing="removing.includes(rule.id)"
-        @delete="deleteRule"
+    <!-- Список правил и есть поле ввода: по правилу на строку, напротив
+         каждой — чем она станет. Отдельного поля для добавления нет и
+         крестиков для удаления по одному тоже: правило заводится набором
+         новой строки, а убирается стиранием своей. -->
+    <TransitionGroup tag="ul" name="list" class="lines" v-bind="collapse">
+      <RuleLine
+        v-for="(line, i) in lines"
+        :key="line.key"
+        :text="line.text"
+        :mark="marks[i]"
+        :tied="ties[i]"
+        :placeholder="i === lines.length - 1 ? 'Адрес, подсеть, домен или зона' : ''"
+        @update="text => edit(i, text)"
+        @split="at => split(i, at)"
+        @join="join(i)"
+        @drop="drop(i)"
+        @move="delta => move(i, delta)"
+        @paste="(chunks, from, to) => paste(i, chunks, from, to)"
       />
     </TransitionGroup>
 
-    <!-- Пустое место объясняем, только когда объяснять есть что. Пока внизу
-         стоит строка будущего правила, «ничего не найдено» — это шум: и так
-         видно, что такого правила ещё нет. -->
     <Transition name="fade">
-      <p v-if="!visibleGroups.length && !visibleLoose.length && !candidate && !adding.length" class="muted">
-        {{ rules.length
-          ? 'Ничего не найдено'
-          : 'Правил нет. Добавьте адрес (1.1.1.1), подсеть (10.0.0.0/8), домен (dtel.ru) или зону (.ru)' }}
+      <p v-if="badCount" class="rule-hint rule-hint--bad">
+        Строк с ошибкой: {{ badCount }} — они останутся в поле, но в силу не вступят
       </p>
     </Transition>
+
+    <!-- Строка применения. Пока она не нажата, служба ничего не знает о
+         правках: набор правил меняется целиком и разом, а не по букве. -->
+    <div class="apply">
+      <span class="apply__count">{{ summary }}</span>
+      <button
+        class="btn btn--accent"
+        :class="{ 'btn--busy': applying }"
+        :disabled="!dirty || applying"
+        @click="apply"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+        {{ dirty ? `Применить: ${change}` : 'Применить' }}
+      </button>
+      <button v-if="dirty" class="btn btn--quiet" :disabled="applying" @click="reset">
+        Отменить правки
+      </button>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import type { RoutingConfig, RoutingMode } from '~/composables/useApi'
-import type { RuleType } from '~/composables/useRuleDraft'
+import type { RoutingConfig, RoutingMode, RoutingRule } from '~/composables/useApi'
+import type { LineMark } from './RuleLine.vue'
 
-// Правила маршрутизации: режим, поле поиска-добавления и список.
+// Правила маршрутизации: режим и редактор списка.
 //
-// Панель самодостаточна — правила больше нигде на странице не нужны, поэтому
-// и читает, и меняет их она сама. Наверх уходят только сообщения
-// пользователю: очередь уведомлений принадлежит странице.
+// Список правил и есть поле ввода — по правилу на строку. Раньше здесь было
+// три способа делать одно и то же: поле «поиск и добавление», список со
+// строками-крестиками и отдельное окно для ввода списком. Теперь способ один,
+// и он же самый быстрый: правило заводится набором строки, убирается её
+// стиранием, а сотня правил вставляется из буфера.
 //
-// Изменения применяются сразу, на живом туннеле, поэтому после каждой
-// операции список перечитывается: правило могло лечь не целиком — например,
-// имя не разрешилось, — и показывать надо то, что действительно записано.
+// Правки копятся и уходят одним запросом по «Применить». Служба на каждое
+// применение пересобирает маршрутизацию на живом туннеле, поэтому набор
+// правил должен меняться разом, а не по букве; заодно видно заранее, что
+// именно изменится, и до нажатия ничего не потеряно.
 const emit = defineEmits<{ notify: [text: string, type?: 'error' | 'ok'] }>()
 
 const api = useApi()
@@ -177,36 +147,31 @@ const api = useApi()
 const routing = ref<RoutingConfig | null>(null)
 
 // Источник каждого правила приходит вторым запросом: ответ считается по DNS и
-// может задержаться, а список обязан показаться сразу. Пока его нет — список
-// просто не сгруппирован.
+// может задержаться, а список обязан показаться сразу. Нужен для полосы
+// хозяйства слева и для кнопки «Упорядочить».
 const sources = ref<Record<string, string>>({})
 
-const input = ref('')
-
-// Правила, которые сейчас добавляются. Их может быть несколько: поле
-// освобождается сразу после нажатия, и следующее правило набирают, пока
-// служба возится с предыдущим. Значение хранится целиком — строка обязана
-// показывать то, что действительно ушло в службу, а не то, что сейчас в поле.
-interface AddingRule {
-  type: RuleType
-  value: string
+// line — одна строка редактора. Ключ свой, не зависящий от текста: строку
+// правят посимвольно, и ключ по значению заставлял бы Vue пересоздавать поле
+// на каждую букву — вместе с потерей фокуса.
+interface Line {
+  key: number
+  text: string
+  // id — правило в службе, из которого выросла строка. Пусто у набранных
+  // руками: у них идентификатора ещё нет.
+  id?: string
 }
 
-const adding = ref<AddingRule[]>([])
+let nextKey = 1
 
-// switching — идёт смена режима. Служба на ней пересобирает маршруты целиком,
-// и без отметки переключатель выглядит заевшим.
+// seeded — поле уже заполняли из службы. До этого любое сравнение с
+// сохранённым списком бессмысленно: пустое поле означает не «удалить всё», а
+// «ещё не загрузились».
+let seeded = false
+
+const lines = ref<Line[]>([])
+const applying = ref(false)
 const switching = ref(false)
-
-// importing — идёт загрузка правил из файла. Их бывает много, и служба
-// применяет весь список разом: без отметки кнопка выглядит не сработавшей.
-const importing = ref(false)
-
-// Правила, которые сейчас удаляются. Удаление идёт не мгновенно: служба
-// пересобирает маршруты и DNS на живом туннеле, и это занимает заметное
-// время. Без отметки строка всё это время стоит как ни в чём не бывало, и
-// пользователь жмёт крестик снова и снова.
-const removing = ref<string[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const modes = [
@@ -214,80 +179,273 @@ const modes = [
   { value: 'direct_list' as RoutingMode, title: 'Всё через VPN, кроме списка', note: 'Список идёт напрямую' }
 ]
 
-const rules = computed(() => routing.value?.rules || [])
+const saved = computed(() => routing.value?.rules || [])
 
-const draft = computed(() => parseRule(input.value))
+// Разбор строк. Считается один раз на всё: и метка напротив строки, и
+// разница с сохранённым списком берутся отсюда.
+interface Parsed {
+  mark: LineMark
+  // key — правило в виде «вид:значение». Пусто у строк, которые правилом не
+  // станут: пустых, ошибочных и повторов.
+  key: string
+  value: string
+  type?: string
+}
 
-// Уже добавленное правило с тем же значением. Сравниваем по приведённому
-// виду: «DTEL.RU» и «dtel.ru» — одно и то же, и предлагать добавить второе
-// такое же нельзя.
-const existing = computed(() => {
-  if (draft.value.kind !== 'ready') return null
-  return rules.value.find(r => r.value.trim().toLowerCase() === draft.value.value) || null
-})
+const parsed = computed<Parsed[]>(() => {
+  const seen = new Set<string>()
 
-// Подпись под полем говорит только то, чего не видно и так: что набранное
-// не годится или что такое правило уже есть. Готовность подписи не требует —
-// про неё говорит сама строка будущего правила с кнопкой.
-const hint = computed(() => {
-  if (draft.value.kind === 'invalid') return draft.value.reason
-  if (existing.value) return 'Такое правило уже есть — оно отмечено в списке'
-  if (alreadyAdding.value) return 'Такое правило уже добавляется'
-  return ''
-})
+  return lines.value.map(line => {
+    const draft = parseRule(line.text)
 
-const hintClass = computed(() => {
-  if (draft.value.kind === 'invalid') return 'rule-hint--bad'
-  if (existing.value || alreadyAdding.value) return 'rule-hint--known'
-  return ''
-})
+    if (draft.kind === 'empty') {
+      return { mark: { kind: 'empty', label: '' }, key: '', value: '' }
+    }
 
-// Такое же правило уже уехало в службу и ждёт ответа. Второй раз его слать
-// незачем, а показывать кнопку — значит обещать то, чего не будет.
-const alreadyAdding = computed(
-  () => draft.value.kind === 'ready' && adding.value.some(item => item.value === draft.value.value)
-)
+    if (draft.kind !== 'ready') {
+      // «Слово без точки» здесь не поиск, а опечатка: искать в редактируемом
+      // списке нечего, а домен верхнего уровня пишется зоной.
+      const reason = draft.kind === 'query'
+        ? 'домен верхнего уровня пишется зоной: .ru'
+        : draft.reason || 'не похоже на правило'
 
-// candidate — правило, которое добавится по нажатию: набрано целиком, в
-// списке его ещё нет и оно не в пути.
-const candidate = computed(
-  () => draft.value.kind === 'ready' && !existing.value && !alreadyAdding.value
-)
+      return { mark: { kind: 'bad', label: 'Ошибка', reason }, key: '', value: line.text.trim() }
+    }
 
-const { groups, loose } = useRuleGroups(rules, sources)
+    const value = draft.value!
+    const key = `${draft.type}:${value}`
 
-// Набрали то, что уже есть, — подводим к нему. Сказать «оно в списке» мало,
-// когда список не помещается на экран: пользователь верит на слово и ищет
-// глазами то, что можно просто показать.
-watch(existing, rule => {
-  if (!rule) return
+    if (seen.has(key)) {
+      return {
+        mark: { kind: 'dup', label: 'Уже есть', reason: 'такое правило стоит выше' },
+        key: '',
+        value,
+        type: draft.type
+      }
+    }
+    seen.add(key)
 
-  nextTick(() => {
-    const row = document.getElementById(`rule-${rule.id}`)
-    if (!row) return
-
-    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    row.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'nearest' })
+    return {
+      mark: { kind: 'ok', label: ruleTypeLabel(draft.type!), type: draft.type },
+      key,
+      value,
+      type: draft.type
+    }
   })
 })
 
-// Поиск идёт по набранному тексту как есть: набрано правило целиком — в
-// списке останется оно само, набрано «dtel» — всё хозяйство.
-function matches(rule: { type: string; value: string }) {
-  const q = input.value.trim().toLowerCase()
-  if (!q) return true
-  return rule.value.toLowerCase().includes(q) || ruleTypeLabel(rule.type).toLowerCase().includes(q)
+const marks = computed(() => parsed.value.map(p => p.mark))
+const badCount = computed(() => parsed.value.filter(p => p.mark.kind === 'bad').length)
+
+// Разница с тем, что записано в службе. Считается по значениям, а не по
+// строкам: переставленные местами правила — это не правка.
+const diff = computed(() => {
+  const before = new Map<string, string>()
+  for (const rule of saved.value) {
+    before.set(`${rule.type}:${rule.value.trim().toLowerCase()}`, rule.id)
+  }
+
+  const after = new Set(parsed.value.map(p => p.key).filter(Boolean))
+
+  const add: string[] = []
+  for (const item of parsed.value) {
+    if (item.key && !before.has(item.key)) add.push(item.value)
+  }
+
+  const remove: string[] = []
+  for (const [key, id] of before) {
+    if (!after.has(key)) remove.push(id)
+  }
+
+  return { add, remove }
+})
+
+const dirty = computed(() => diff.value.add.length > 0 || diff.value.remove.length > 0)
+
+const change = computed(() => {
+  const { add, remove } = diff.value
+  const parts: string[] = []
+  if (add.length) parts.push(`+${add.length}`)
+  if (remove.length) parts.push(`−${remove.length}`)
+  return parts.join(' ')
+})
+
+const summary = computed(() => {
+  const { add, remove } = diff.value
+  if (!add.length && !remove.length) return `Правил: ${saved.value.length}`
+
+  const parts: string[] = []
+  if (add.length) parts.push(`добавится ${add.length}`)
+  if (remove.length) parts.push(`удалится ${remove.length}`)
+  return parts.join(', ')
+})
+
+// Хозяйство: git.dtel.ru, bitrix.dtel.ru и адрес того же сервера — одна
+// запись в голове пользователя. Заголовка у группы нет, её держит полоса
+// слева у соседних строк одного источника.
+function sourceOf(line: Line) {
+  return line.id ? sources.value[line.id] || '' : ''
 }
 
-// Группа остаётся на месте, даже если под фильтр попало одно её правило:
-// иначе по найденной записи не понять, к чему она относится.
-const visibleGroups = computed(() =>
-  groups.value
-    .map(group => ({ ...group, visible: group.rules.filter(matches) }))
-    .filter(group => group.visible.length > 0)
+const ties = computed(() =>
+  lines.value.map((line, i) => {
+    const source = sourceOf(line)
+    if (!source) return false
+
+    const before = i > 0 && sourceOf(lines.value[i - 1]) === source
+    const after = i < lines.value.length - 1 && sourceOf(lines.value[i + 1]) === source
+    return before || after
+  })
 )
 
-const visibleLoose = computed(() => loose.value.filter(matches))
+// Упорядочивать есть что, только когда хотя бы одно хозяйство разбросано по
+// списку: кнопка, которая ничего не изменит, вводит в заблуждение.
+const canOrder = computed(() => {
+  const order: string[] = []
+  for (const line of lines.value) {
+    const source = sourceOf(line)
+    if (!source) continue
+    if (order[order.length - 1] !== source) order.push(source)
+  }
+  return new Set(order).size !== order.length
+})
+
+// Правила одного хозяйства собираются к первому из них. Порядок остального не
+// трогаем: список набирал пользователь, и перетасовывать его целиком ради
+// группировки — больше потеря, чем польза.
+function orderBySource() {
+  const rest = [...lines.value]
+  const result: Line[] = []
+
+  while (rest.length) {
+    const line = rest.shift()!
+    result.push(line)
+
+    const source = sourceOf(line)
+    if (!source) continue
+
+    // Идём с конца, чтобы splice не сбивал ещё не просмотренные места, а
+    // собранное разворачиваем обратно: внутри хозяйства порядок должен
+    // остаться тем, который набрал пользователь.
+    const same: Line[] = []
+    for (let i = rest.length - 1; i >= 0; i--) {
+      if (sourceOf(rest[i]) === source) same.unshift(...rest.splice(i, 1))
+    }
+    result.push(...same)
+  }
+
+  lines.value = result
+}
+
+// ─── Правка строк ───────────────────────────────────────────────────────
+//
+// Фокус переставляет панель, а не сама строка: только здесь известно, какая
+// строка появилась и какая исчезла.
+
+// Ищем поле в разметке, а не держим карту ссылок: строки вставляются и
+// убираются посреди списка, и карта, ключом которой служит номер строки,
+// разъезжается с ним ровно там, где нужна.
+function focusLine(i: number, at?: number) {
+  nextTick(() => {
+    const input = document.querySelectorAll<HTMLInputElement>('.lines .line__input')[i]
+    if (!input) return
+
+    input.focus()
+    const pos = at ?? input.value.length
+    input.setSelectionRange(pos, pos)
+  })
+}
+
+function edit(i: number, text: string) {
+  lines.value[i] = { ...lines.value[i], text }
+  keepTrailingLine()
+}
+
+// Enter разрывает строку в месте курсора: хвост уезжает на новую. Правило,
+// приписанное к строке, при этом теряется — от него осталась только часть.
+function split(i: number, at: number) {
+  const line = lines.value[i]
+
+  // Внизу и так стоит пустая строка — вторая такая же ни к чему.
+  if (!line.text && i === lines.value.length - 1) return
+
+  const head = line.text.slice(0, at)
+  const tail = line.text.slice(at)
+
+  lines.value.splice(i, 1,
+    { key: line.key, text: head, id: head === line.text ? line.id : undefined },
+    { key: nextKey++, text: tail })
+
+  keepTrailingLine()
+  focusLine(i + 1, 0)
+}
+
+// Backspace в начале строки склеивает её с предыдущей — как в любом
+// текстовом поле.
+function join(i: number) {
+  if (i === 0) return
+
+  const previous = lines.value[i - 1]
+  const at = previous.text.length
+
+  lines.value.splice(i - 1, 2, {
+    key: previous.key,
+    text: previous.text + lines.value[i].text,
+    id: lines.value[i].text ? undefined : previous.id
+  })
+
+  keepTrailingLine()
+  focusLine(i - 1, at)
+}
+
+function drop(i: number) {
+  lines.value.splice(i, 1)
+  keepTrailingLine()
+  focusLine(Math.max(0, i - 1))
+}
+
+function move(i: number, delta: number) {
+  const target = i + delta
+  if (target >= 0 && target < lines.value.length) focusLine(target)
+}
+
+// Вставка списка из буфера — главный способ завести правила пачкой. Строки
+// раскладываются по строкам редактора, а начало и хвост текущей остаются на
+// своих местах.
+function paste(i: number, chunks: string[], from: number, to: number) {
+  const line = lines.value[i]
+  const head = line.text.slice(0, from)
+  const tail = line.text.slice(to)
+
+  const texts = chunks.map(chunk => chunk.trim())
+  texts[0] = head + texts[0]
+  texts[texts.length - 1] += tail
+
+  const fresh = texts.map((text, n) => ({
+    key: n === 0 ? line.key : nextKey++,
+    text,
+    id: undefined
+  }))
+
+  lines.value.splice(i, 1, ...fresh)
+  keepTrailingLine()
+  focusLine(i + fresh.length - 1)
+}
+
+// Снизу всегда одна пустая строка: иначе набрать новое правило было бы негде,
+// а заводить её кнопкой — лишний шаг там, где хватает курсора.
+function keepTrailingLine() {
+  const last = lines.value[lines.value.length - 1]
+  if (!last || last.text.trim()) lines.value.push({ key: nextKey++, text: '' })
+}
+
+// ─── Служба ─────────────────────────────────────────────────────────────
+
+function seed(rules: RoutingRule[]) {
+  lines.value = rules.map(rule => ({ key: nextKey++, text: rule.value, id: rule.id }))
+  keepTrailingLine()
+  seeded = true
+}
 
 async function load() {
   try {
@@ -297,14 +455,15 @@ async function load() {
     return
   }
 
+  // Непринятые правки не затираем: перечитать список могли и по своим
+  // причинам, а набранное пользователем принадлежит ему. На первой загрузке
+  // затирать нечего — поле ещё пустое, а пустое поле против непустого списка
+  // выглядит как «удалить всё».
+  if (!seeded || !dirty.value) seed(saved.value)
+
   loadSources()
 }
 
-// Источники подтягиваются отдельно. Молчащий DNS ошибкой не считается —
-// служба всё равно отвечает тем, что успела выяснить, — поэтому отказ здесь
-// означает ровно одно: эндпоинта нет, служба старее интерфейса. Об этом
-// говорим один раз: без него группировки не будет вовсе, и списывать это на
-// «не сгруппировалось» пользователю не с чего.
 let sourcesWarned = false
 
 async function loadSources() {
@@ -325,67 +484,67 @@ async function setMode(mode: RoutingMode) {
 
   try {
     await api.setRoutingMode(mode)
+    if (routing.value) routing.value = { ...routing.value, mode }
   } catch (e: any) {
     emit('notify', e.message)
   }
 
-  await load()
   switching.value = false
 }
 
-// Добавление идёт не мгновенно: служба пересобирает маршруты и DNS на живом
-// туннеле. Ждать её, держа поле занятым, незачем — правило отделяется в
-// собственную строку и живёт там до ответа, а поле сразу свободно для
-// следующего.
-async function addRule() {
-  if (!candidate.value) return
+// Весь набор правок уходит одним запросом: служба применит его разом и
+// пересоберёт маршруты один раз, а не по разу на правило.
+async function apply() {
+  if (!dirty.value || applying.value) return
 
-  const { type, value } = draft.value
-  const item: AddingRule = { type: type!, value: value! }
-
-  adding.value = [...adding.value, item]
-  input.value = ''
+  const { add, remove } = diff.value
+  applying.value = true
 
   try {
-    await api.addRoutingRule(item.type, item.value)
-    await load()
-    emit('notify', `Добавлено: ${item.value}`, 'ok')
-  } catch (e: any) {
-    emit('notify', e.message)
+    const result = await api.batchRoutingRules(add, remove)
 
-    // Отвергнутое значение чаще всего надо поправить, а не набирать заново:
-    // возвращаем его в поле, если пользователь не занял его своим.
-    if (!input.value) input.value = item.value
+    routing.value = await api.getRouting()
+    seed(saved.value)
+    loadSources()
+
+    const parts: string[] = []
+    if (result.added.length) parts.push(`добавлено ${result.added.length}`)
+    if (result.removed) parts.push(`удалено ${result.removed}`)
+    if (!parts.length) parts.push('изменений нет')
+
+    // Об отвергнутом говорим отдельно и поимённо: молчать о нём значило бы
+    // показывать список, которого в службе нет.
+    if (result.rejected.length) {
+      const names = result.rejected.slice(0, 3).map(r => r.value).join(', ')
+      const tail = result.rejected.length > 3 ? ` и ещё ${result.rejected.length - 3}` : ''
+      emit('notify', `Не взяли: ${names}${tail}`)
+    } else {
+      emit('notify', parts.join(', '), 'ok')
+    }
+  } catch (e: any) {
+    // Пакетная правка появилась вместе с этим окном. Служба постарше о ней
+    // не знает, и «Ошибка 404» тут ничего не объясняет.
+    emit('notify', /404/.test(e.message)
+      ? 'Служба не умеет применять правила пачкой — пересоберите и перезапустите её'
+      : e.message)
   } finally {
-    adding.value = adding.value.filter(other => other.value !== item.value)
+    applying.value = false
   }
 }
 
-async function deleteRule(id: string) {
-  // Повторное нажатие по той же строке ничего не делает: запрос уже идёт.
-  if (removing.value.includes(id)) return
-
-  const value = rules.value.find(r => r.id === id)?.value || ''
-  removing.value = [...removing.value, id]
-
-  try {
-    await api.deleteRoutingRule(id)
-    await load()
-    emit('notify', `Удалено: ${value}`, 'ok')
-  } catch (e: any) {
-    emit('notify', e.message)
-  } finally {
-    removing.value = removing.value.filter(waiting => waiting !== id)
-  }
+function reset() {
+  seed(saved.value)
 }
 
+// ─── Файлы ──────────────────────────────────────────────────────────────
+//
 // Выгрузка и загрузка — единственный способ перенести правила на другую
 // машину: своего облака у клиента нет и не будет.
+
 function exportRules() {
   if (!routing.value) return
 
-  const count = routing.value.rules?.length || 0
-  const body = JSON.stringify({ mode: routing.value.mode, rules: routing.value.rules }, null, 2)
+  const body = JSON.stringify({ mode: routing.value.mode, rules: saved.value }, null, 2)
 
   const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }))
   const a = document.createElement('a')
@@ -394,12 +553,20 @@ function exportRules() {
   a.click()
   URL.revokeObjectURL(url)
 
-  emit('notify', `Выгружено правил: ${count}`, 'ok')
+  emit('notify', `Выгружено правил: ${saved.value.length}`, 'ok')
 }
 
 function pickFile() {
   fileInput.value?.click()
 }
+
+interface PendingImport {
+  name: string
+  mode: RoutingMode | null
+  values: string[]
+}
+
+const pending = ref<PendingImport | null>(null)
 
 async function onFile(e: Event) {
   const target = e.target as HTMLInputElement
@@ -410,8 +577,6 @@ async function onFile(e: Event) {
   target.value = ''
   if (!file) return
 
-  importing.value = true
-
   try {
     const data = JSON.parse(await file.text())
 
@@ -419,17 +584,43 @@ async function onFile(e: Event) {
       throw new Error('В файле нет списка правил')
     }
 
-    await api.setRouting({ mode: data.mode, rules: data.rules })
-    // Поле сбрасываем: иначе загруженные правила остались бы за фильтром,
-    // набранным до загрузки.
-    input.value = ''
-    await load()
-    emit('notify', `Загружено правил: ${data.rules.length}`, 'ok')
+    const values = data.rules
+      .map((r: any) => (typeof r === 'string' ? r : r?.value))
+      .filter((v: any): v is string => typeof v === 'string' && v.trim() !== '')
+      .map((v: string) => v.trim())
+
+    if (!values.length) throw new Error('В файле нет ни одного правила')
+
+    // Спрашиваем, а не решаем за пользователя: раньше загрузка молча
+    // затирала весь список, а сообщение говорило только про загруженное.
+    pending.value = {
+      name: file.name,
+      mode: data.mode === 'vpn_list' || data.mode === 'direct_list' ? data.mode : null,
+      values
+    }
   } catch (err: any) {
     emit('notify', err instanceof SyntaxError ? 'Файл не является корректным JSON' : err.message)
-  } finally {
-    importing.value = false
   }
+}
+
+// Файл ложится в поле текстом и в силу сам по себе не вступает: увидев
+// результат, его ещё можно поправить или отменить.
+async function takeFile(replace: boolean) {
+  const chosen = pending.value
+  if (!chosen) return
+
+  const fresh = chosen.values.map(text => ({ key: nextKey++, text, id: undefined }))
+  lines.value = replace ? fresh : [...lines.value.filter(line => line.text.trim()), ...fresh]
+  keepTrailingLine()
+
+  pending.value = null
+
+  // Режим — не правило, он применяется сразу, как и переключателем выше.
+  if (chosen.mode && chosen.mode !== routing.value?.mode) {
+    await setMode(chosen.mode)
+  }
+
+  emit('notify', `В поле добавлено строк: ${chosen.values.length} — нажмите «Применить»`, 'ok')
 }
 
 onMounted(load)

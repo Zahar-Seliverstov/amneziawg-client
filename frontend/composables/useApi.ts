@@ -27,6 +27,14 @@ export interface ConnectionStatus {
   // attempt — номер идущей попытки подключения; отсутствует, когда соединение
   // установлено или его нет вовсе.
   attempt?: number
+  // routing_error — правила не легли на живой туннель. Отдельно от error,
+  // потому что это не состояние соединения: туннель поднят и работает, не
+  // сложилось только с правилами.
+  //
+  // Приходит потоком, а не ответом на правку: применение отложено на доли
+  // секунды и схлопывает всплеск правок в одну пересборку, поэтому HTTP
+  // отвечает раньше, чем маршруты встают.
+  routing_error?: string
   // kill_switch — блокировка трафика мимо туннеля сейчас действует
   kill_switch?: boolean
   bytes_received: number
@@ -41,6 +49,18 @@ export interface RoutingRule {
   type: 'ip' | 'cidr' | 'domain' | 'zone'
   value: string
   enabled: boolean
+}
+
+// Отвергнутое правило: значение и причина, которую видно пользователю.
+export interface RejectedRule {
+  value: string
+  reason: string
+}
+
+export interface RoutingBatchResult {
+  added: RoutingRule[]
+  rejected: RejectedRule[]
+  removed: number
 }
 
 export interface RoutingConfig {
@@ -204,22 +224,17 @@ export function useApi() {
     })
   }
   
-  async function setRouting(routing: RoutingConfig): Promise<RoutingConfig> {
-    return fetchApi<RoutingConfig>('/routing', {
-      method: 'PUT',
-      body: JSON.stringify(routing)
-    })
-  }
-
-  async function addRoutingRule(type: string, value: string): Promise<RoutingRule> {
-    return fetchApi<RoutingRule>('/routing/rules', {
+  // Пакетная правка списка правил: служба применяет весь пакет разом — одно
+  // сохранение и одна пересборка маршрутов на все правила сразу. Ради этого
+  // она и заведена: правила по одному означали бы пересборку на каждое.
+  //
+  // Плохие правила отвергаются поштучно, поэтому отказ приходит не ошибкой
+  // запроса, а списком rejected: остальные при этом взяты.
+  async function batchRoutingRules(add: string[], remove: string[] = []): Promise<RoutingBatchResult> {
+    return fetchApi<RoutingBatchResult>('/routing/rules/batch', {
       method: 'POST',
-      body: JSON.stringify({ type, value, enabled: true })
+      body: JSON.stringify({ add, remove })
     })
-  }
-  
-  async function deleteRoutingRule(id: string): Promise<void> {
-    await fetchApi(`/routing/rules/${id}`, { method: 'DELETE' })
   }
   
   // Автозапуск десктопной оболочки при входе в систему
@@ -297,9 +312,7 @@ export function useApi() {
     getRouting,
     getRoutingSources,
     setRoutingMode,
-    setRouting,
-    addRoutingRule,
-    deleteRoutingRule,
+    batchRoutingRules,
     getAutostart,
     setAutostart,
     getKillSwitch,

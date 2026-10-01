@@ -486,3 +486,60 @@ func (c *AppConfig) SetSettings(settings AppSettings) {
 	defer c.mu.Unlock()
 	c.state.Settings = settings
 }
+
+// BatchRoutingRules применяет пакет правок за один захват замка: сначала
+// удаляет по идентификаторам, потом добавляет то, чего ещё нет.
+//
+// Одной операцией, а не циклом из AddRoutingRule, по двум причинам. Первая:
+// дедупликация обязана видеть и уже сохранённые правила, и соседей по пакету,
+// а между двумя вызовами список успевает измениться. Вторая: за пакетом идёт
+// одно сохранение файла и одна пересборка маршрутов — ради этого массовый
+// ввод и заводился.
+//
+// Возвращает добавленные правила (с проставленными идентификаторами),
+// отвергнутые как повторы и число действительно удалённых.
+func (c *AppConfig) BatchRoutingRules(add []RoutingRule, remove []string) (added, duplicates []RoutingRule, removed int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(remove) > 0 {
+		drop := make(map[string]bool, len(remove))
+		for _, id := range remove {
+			drop[id] = true
+		}
+
+		kept := c.state.Routing.Rules[:0]
+		for _, rule := range c.state.Routing.Rules {
+			if drop[rule.ID] {
+				removed++
+				continue
+			}
+			kept = append(kept, rule)
+		}
+		c.state.Routing.Rules = kept
+	}
+
+	for _, rule := range add {
+		if c.hasRoutingRule(rule) {
+			duplicates = append(duplicates, rule)
+			continue
+		}
+
+		rule.ID = GenerateID()
+		rule.Enabled = true
+		c.state.Routing.Rules = append(c.state.Routing.Rules, rule)
+		added = append(added, rule)
+	}
+
+	return added, duplicates, removed
+}
+
+// hasRoutingRule сообщает, есть ли уже такое правило. Вызывать под замком.
+func (c *AppConfig) hasRoutingRule(rule RoutingRule) bool {
+	for _, existing := range c.state.Routing.Rules {
+		if SameRule(existing, rule) {
+			return true
+		}
+	}
+	return false
+}

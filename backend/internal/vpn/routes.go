@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/user/amnezia-web-client/internal/config"
 )
@@ -74,38 +75,115 @@ func (m *Manager) addRoute(args ...string) error {
 	return nil
 }
 
+// addRoutes ставит список маршрутов одним запуском ip и запоминает те, что
+// легли. Вызывать под routeMu.
+//
+// Отдельно от addRoute, потому что здесь выигрыш и есть весь смысл: правил по
+// доменам бывают сотни, каждое имя даёт по несколько адресов, и раньше на
+// каждый шёл свой fork+exec. Запоминаем по-прежнему только удавшиеся: чужой
+// маршрут, уже стоявший в таблице, снимать при пересборке нельзя.
+func (m *Manager) addRoutes(routes [][]string) {
+	for i, err := range m.ip.AddRoutes(routes) {
+		if err != nil {
+			log.Printf("Warning: failed to add route %s: %v", strings.Join(routes[i], " "), err)
+			continue
+		}
+		m.installedRoutes = append(m.installedRoutes, routes[i])
+	}
+}
+
 // flushRoutes снимает все маршруты, поставленные нами, в обратном порядке.
 // Вызывать под routeMu.
+//
+// Обратный порядок сохранён и в пакете: маршрут мог опираться на другой,
+// поставленный раньше, и снимать их вразнобой нельзя.
 func (m *Manager) flushRoutes() {
-	for i := len(m.installedRoutes) - 1; i >= 0; i-- {
-		m.ip.DelRoute(m.installedRoutes[i]...)
+	// Сначала маршруты правил, потом устройство туннеля: в режиме исключений
+	// правила ложатся поверх /1-маршрутов, и снимать их надо раньше.
+	routes := m.flushRuleRoutes()
+
+	if len(routes) == 0 && len(m.installedRoutes) == 0 {
+		return
 	}
+
+	for i := len(m.installedRoutes) - 1; i >= 0; i-- {
+		routes = append(routes, m.installedRoutes[i])
+	}
+
+	// Исход каждого снятия здесь не важен: учёт всё равно обнуляется. Не
+	// снявшийся маршрут — это либо чужая рука, либо уже исчезнувший
+	// интерфейс, и в обоих случаях делать с ним нечего.
+	m.ip.DelRoutes(routes)
 	m.installedRoutes = nil
 }
 
 // ApplyRouting перестраивает маршруты на живом туннеле.
 // Если туннель не поднят — ничего не делает: правила применятся при подключении.
-func (m *Manager) ApplyRouting(routing *config.RoutingConfig) error {
+//
+// По возможности правит вместо пересборки. Пересборка гасит посредника DNS, а
+// вместе с ним пропадают все выученные им маршруты: после правки одного
+// правила браузер заново учил адреса всех остальных, и сайты на секунду
+// отваливались. Что можно поправить на месте и что нельзя — решает
+// planRoutingDelta (incremental.go).
+func (m *Manager) ApplyRouting(rc *config.RoutingConfig) error {
 	m.mu.RLock()
 	state := m.status.State
 	cfg := m.activeConfig
+	previous := m.routingConfig
+	proxyUp := m.dnsProxy != nil
 	m.mu.RUnlock()
 
 	if state != StateConnected || cfg == nil {
 		return nil
 	}
 
-	log.Printf("Re-applying routing rules on live tunnel")
+	delta, incremental := planRoutingDelta(previous, rc)
 
-	if err := m.configureTraffic(cfg, routing); err != nil {
-		return fmt.Errorf("не удалось пересобрать маршруты: %w", err)
+	// Посредник имён обязан работать, если правила по именам есть. Подняться
+	// он мог и не суметь — :53 бывает занят, — и тогда правка ничего не
+	// исправит: нужна пересборка, она же единственная попытка запустить его
+	// снова.
+	if incremental && needsNameRouting(rc) && !proxyUp {
+		incremental = false
 	}
 
+	if incremental {
+		log.Printf("Правка маршрутизации на живом туннеле: добавлено %d, удалено %d",
+			len(delta.added), len(delta.removed))
+
+		m.applyRoutingDelta(cfg, rc, delta)
+
+		m.mu.Lock()
+		m.routingConfig = rc
+		m.status.RoutingError = ""
+		m.mu.Unlock()
+
+		m.notifyStatusChange()
+		return nil
+	}
+
+	log.Printf("Re-applying routing rules on live tunnel")
+
+	err := m.configureTraffic(cfg, rc)
+
 	m.mu.Lock()
-	m.routingConfig = routing
+	if err == nil {
+		m.routingConfig = rc
+		m.status.RoutingError = ""
+	} else {
+		// Применённой маршрутизацией остаётся прежняя: новую поставить не
+		// вышло, и притворяться, что она в силе, нельзя.
+		m.status.RoutingError = err.Error()
+	}
 	m.mu.Unlock()
 
+	// Оповещаем в обоих случаях: отказ применения виден пользователю только
+	// отсюда — HTTP на правку правил ответил задолго до неё.
 	m.notifyStatusChange()
+
+	if err != nil {
+		return fmt.Errorf("не удалось пересобрать маршруты: %w", err)
+	}
 	return nil
 }
 
@@ -149,63 +227,110 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 		return nil
 	}
 
-	// Apply routing rules based on mode
-	switch routing.Mode {
-	case config.RoutingModeVPNList:
-		// Route only specified items through VPN
-		for _, rule := range routing.Rules {
-			if !rule.Enabled {
-				continue
-			}
+	// Все имена спрашиваются разом, и только потом ставятся маршруты.
+	// Последовательный резолв был здесь главным источником задержки: сотня
+	// доменов, каждый со своим таймаутом, складывалась в минуты ожидания на
+	// молчащем сервере имён — и всё это внутри обработчика HTTP.
+	addrs := m.resolveRules(routing.Rules, resolver)
 
-			ips, err := m.resolveRoutingRule(rule, resolver)
-			if err != nil {
-				log.Printf("Warning: failed to resolve rule %s: %v", rule.Value, err)
-				continue
-			}
-
-			for _, ip := range ips {
-				if err := m.addRoute(ip, "dev", ifname); err != nil {
-					log.Printf("Warning: failed to add route %s: %v", ip, err)
-				}
-			}
-		}
-
-	case config.RoutingModeDirectList:
-		// Route all through VPN except specified items
-		// First, set up default route through VPN
+	if routing.Mode == config.RoutingModeDirectList {
+		// Всё в туннель, кроме перечисленного. Сначала сам туннель.
 		if err := m.setupDefaultVPNRoute(cfg); err != nil {
 			log.Printf("Warning: failed to setup default VPN route: %v", err)
 		}
-
-		// Then exclude specific routes
-		for _, rule := range routing.Rules {
-			if !rule.Enabled {
-				continue
-			}
-
-			ips, err := m.resolveRoutingRule(rule, resolver)
-			if err != nil {
-				log.Printf("Warning: failed to resolve rule %s: %v", rule.Value, err)
-				continue
-			}
-
-			// Эти адреса должны идти мимо туннеля — тем путём, каким система
-			// шла к ним до подключения. Каким именно, решает bypassRoute:
-			// шлюз по умолчанию тут не годится, см. bypass.go.
-			for _, prefix := range ips {
-				if err := m.addBypassRoute(prefix); err != nil {
-					log.Printf("Исключение %s не выведено мимо туннеля: %v", prefix, err)
-				}
-			}
-		}
 	}
 
+	m.installRuleRoutes(routing.Mode, addrs)
 	return nil
 }
 
-// resolveRoutingRule resolves a routing rule to IP addresses/CIDRs
-func (m *Manager) resolveRoutingRule(rule config.RoutingRule, resolver *net.Resolver) ([]string, error) {
+// ruleAddresses — адреса, к которым свелись правила, и то, какие правила за
+// каждым стоят.
+//
+// Порядок нужен ради предсказуемости: маршруты ложатся в том же порядке, в
+// каком правила стоят в списке. Происхождение — ради инкрементальной правки:
+// без него удаление правила нечем отличить от удаления соседнего, и
+// оставалось бы только снести всё и собрать заново.
+type ruleAddresses struct {
+	order   []string
+	sources map[string]map[string]bool
+}
+
+// ruleKey — правило в виде, пригодном для сравнения наборов. Регистр не в
+// счёт: «DTEL.RU» и «dtel.ru» — одно правило.
+func ruleKey(rule config.RoutingRule) string {
+	return rule.Type + ":" + strings.ToLower(strings.TrimSpace(rule.Value))
+}
+
+// resolveRules превращает правила в адреса, спрашивая имена параллельно.
+//
+// Параллельно — потому что ожидание здесь чужое: сервер имён отвечает за
+// десятки миллисекунд или не отвечает вовсе, и складывать эти ожидания в
+// столбик незачем. Ширина та же, что в rulesource: восемь вопросов разом
+// сервер имён не смущают, а сотня выглядела бы как перебор.
+//
+// Общий дедлайн один на весь набор. Без него сотня молчащих имён давала бы
+// сотню таймаутов подряд даже при параллельной работе — восемь потоков лишь
+// поделили бы это время на восемь.
+//
+// Порядок правил сохраняется, повторы отсеиваются: два имени вполне могут
+// жить на одном адресе, и второй "ip route add" на него всё равно отказал бы.
+// Оба имени при этом запоминаются — маршрут держится, пока жив хоть один их
+// источник.
+func (m *Manager) resolveRules(rules []config.RoutingRule, resolver *net.Resolver) ruleAddresses {
+	ctx, cancel := context.WithTimeout(context.Background(), rulesResolveDeadline)
+	defer cancel()
+
+	resolved := make([][]string, len(rules))
+
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, resolveParallel)
+
+	for i, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+
+		wg.Add(1)
+		slots <- struct{}{}
+
+		go func(i int, rule config.RoutingRule) {
+			defer wg.Done()
+			defer func() { <-slots }()
+
+			ips, err := m.resolveRoutingRule(ctx, rule, resolver)
+			if err != nil {
+				log.Printf("Warning: failed to resolve rule %s: %v", rule.Value, err)
+				return
+			}
+			resolved[i] = ips
+		}(i, rule)
+	}
+
+	wg.Wait()
+
+	addrs := ruleAddresses{sources: make(map[string]map[string]bool)}
+
+	for i, ips := range resolved {
+		key := ruleKey(rules[i])
+
+		for _, prefix := range ips {
+			if addrs.sources[prefix] == nil {
+				addrs.sources[prefix] = make(map[string]bool)
+				addrs.order = append(addrs.order, prefix)
+			}
+			addrs.sources[prefix][key] = true
+		}
+	}
+
+	return addrs
+}
+
+// resolveRoutingRule resolves a routing rule to IP addresses/CIDRs.
+//
+// Родительский контекст задаёт общий срок на весь набор правил, свой таймаут
+// накладывается поверх: одно молчащее имя не должно съедать срок остальных.
+func (m *Manager) resolveRoutingRule(ctx context.Context, rule config.RoutingRule, resolver *net.Resolver) ([]string, error) {
 	switch rule.Type {
 	case config.RuleTypeIP:
 		// Single IP - add /32 suffix if no mask
@@ -225,7 +350,7 @@ func (m *Manager) resolveRoutingRule(rule config.RoutingRule, resolver *net.Reso
 		// при подключении, не дожидаясь, пока пользователь откроет сайт.
 		// Поддерживает же правило в актуальном состоянии посредник DNS
 		// (nameroutes.go) — адреса за именем меняются, и одного резолва мало.
-		ctx, cancel := context.WithTimeout(context.Background(), ruleResolveTimeout)
+		ctx, cancel := context.WithTimeout(ctx, ruleResolveTimeout)
 		defer cancel()
 
 		ips, err := resolver.LookupIP(ctx, "ip", rule.Value)
@@ -271,7 +396,7 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 			return fmt.Errorf("не разобрать адрес сервера %q: %w", peer.Endpoint, err)
 		}
 
-		addrs, err := net.LookupIP(host)
+		addrs, err := m.endpointAddresses(host)
 		if err != nil {
 			return fmt.Errorf("не удалось определить адрес сервера %q: %w", host, err)
 		}
@@ -358,6 +483,42 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 	}
 
 	return nil
+}
+
+// endpointAddresses возвращает адреса сервера VPN, выясняя их один раз за
+// соединение. Вызывать под routeMu.
+//
+// Кэш здесь не роскошь. Адрес спрашивается у системного резолвера, а
+// пересборка правил на живом туннеле начинается с остановки нашего же
+// посредника DNS, на который resolv.conf в этот момент и указывает: запрос
+// уходил в мёртвый сокет. В режиме «всё через VPN, кроме списка» это валило
+// настройку туннеля целиком — правку одного правила пользователь оплачивал
+// пропавшим интернетом.
+//
+// Разбор строки адреса идёт до всякого резолва: Endpoint чаще всего записан
+// адресом, и спрашивать о нём кого бы то ни было незачем.
+func (m *Manager) endpointAddresses(host string) ([]net.IP, error) {
+	if addrs, ok := m.endpointAddrs[host]; ok {
+		return addrs, nil
+	}
+
+	var addrs []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		addrs = []net.IP{ip}
+	} else {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return nil, err
+		}
+		addrs = resolved
+	}
+
+	if m.endpointAddrs == nil {
+		m.endpointAddrs = make(map[string][]net.IP)
+	}
+	m.endpointAddrs[host] = addrs
+
+	return addrs, nil
 }
 
 // hostPrefix превращает адрес в одноадресный префикс: /32 для IPv4 и /128

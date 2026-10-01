@@ -84,8 +84,24 @@ func (m *Manager) syncKillSwitch(cfg *config.AmneziaWGConfig, rc *config.Routing
 		applicable, _ = killSwitchApplicable(cfg, rc)
 	}
 
+	// От списка правил блокировка зависит не целиком, а через один признак:
+	// имеет она смысл при этой маршрутизации или нет. Добавление домена в
+	// список исключений его не меняет — а переприменение всего набора
+	// nft/iptables шло на каждую правку правил, вместе с полной пересборкой
+	// маршрутов. Здесь эта работа пропускается, когда решение то же самое.
+	//
+	// Сравнивается именно решение, а не правила: разбирать, что в списке
+	// поменялось, незачем, когда исход один.
+	want := killSwitchDecision{on: on, applicable: applicable, ifname: ifname}
+	if m.killSwitchApplied != nil && *m.killSwitchApplied == want {
+		return
+	}
+
 	if !on || driver == nil || !applicable {
 		m.clearKillSwitch()
+		// Снятое состояние запоминаем тоже: иначе Clear вызывался бы на
+		// каждой пересборке маршрутов, хотя блокировки и так нет.
+		m.killSwitchApplied = &want
 		return
 	}
 
@@ -98,6 +114,17 @@ func (m *Manager) syncKillSwitch(cfg *config.AmneziaWGConfig, rc *config.Routing
 
 	log.Printf("Блокировка трафика мимо туннеля включена (%s)", driver.Name())
 	m.setKillSwitchActive(true)
+	m.killSwitchApplied = &want
+}
+
+// killSwitchDecision — всё, от чего зависит состояние блокировки. Неудачное
+// применение здесь не запоминается: следующая пересборка обязана попробовать
+// снова, иначе включённая пользователем защита осталась бы выключенной до
+// переподключения.
+type killSwitchDecision struct {
+	on         bool
+	applicable bool
+	ifname     string
 }
 
 // clearKillSwitch снимает блокировку. Вызывать под routeMu.
@@ -120,6 +147,14 @@ func (m *Manager) clearKillSwitch() {
 
 	log.Printf("Блокировка трафика мимо туннеля снята")
 	m.setKillSwitchActive(false)
+}
+
+// forgetKillSwitch забывает последнее применённое решение. Нужен там, где
+// система разбирается целиком: интерфейс исчезает вместе с правилами
+// firewall, и следующее соединение обязано поставить их заново, даже если
+// решение внешне то же самое. Вызывать под routeMu.
+func (m *Manager) forgetKillSwitch() {
+	m.killSwitchApplied = nil
 }
 
 func (m *Manager) setKillSwitchActive(active bool) {

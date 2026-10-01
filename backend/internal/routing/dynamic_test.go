@@ -40,12 +40,12 @@ func TestDynamicSetAddsOncePerAddress(t *testing.T) {
 	set := NewDynamicSet(installer)
 	now := time.Now()
 
-	if n := set.Observe(addrs("1.2.3.4", "5.6.7.8"), time.Hour, now); n != 2 {
+	if n := set.Observe("dtel.ru", addrs("1.2.3.4", "5.6.7.8"), time.Hour, now); n != 2 {
 		t.Fatalf("первое наблюдение: добавлено %d, ждали 2", n)
 	}
 
 	// Повтор того же ответа не должен снова трогать таблицу.
-	if n := set.Observe(addrs("1.2.3.4", "5.6.7.8"), time.Hour, now); n != 0 {
+	if n := set.Observe("dtel.ru", addrs("1.2.3.4", "5.6.7.8"), time.Hour, now); n != 0 {
 		t.Errorf("повтор: добавлено %d, ждали 0", n)
 	}
 
@@ -62,8 +62,8 @@ func TestDynamicSetSweepRemovesExpiredOnly(t *testing.T) {
 	set := NewDynamicSet(installer)
 	start := time.Now()
 
-	set.Observe(addrs("1.2.3.4"), time.Minute, start)
-	set.Observe(addrs("5.6.7.8"), time.Hour, start)
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Minute, start)
+	set.Observe("dtel.ru", addrs("5.6.7.8"), time.Hour, start)
 
 	set.Sweep(start.Add(2 * time.Minute))
 
@@ -82,8 +82,8 @@ func TestDynamicSetObserveExtendsDeadline(t *testing.T) {
 	set := NewDynamicSet(installer)
 	start := time.Now()
 
-	set.Observe(addrs("1.2.3.4"), time.Minute, start)
-	set.Observe(addrs("1.2.3.4"), time.Hour, start.Add(30*time.Second))
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Minute, start)
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Hour, start.Add(30*time.Second))
 
 	set.Sweep(start.Add(2 * time.Minute))
 
@@ -96,7 +96,7 @@ func TestDynamicSetFailedAddIsNotTracked(t *testing.T) {
 	installer := &fakeInstaller{failOn: netip.MustParsePrefix("1.2.3.4/32")}
 	set := NewDynamicSet(installer)
 
-	if n := set.Observe(addrs("1.2.3.4", "5.6.7.8"), time.Hour, time.Now()); n != 1 {
+	if n := set.Observe("dtel.ru", addrs("1.2.3.4", "5.6.7.8"), time.Hour, time.Now()); n != 1 {
 		t.Errorf("добавлено %d, ждали 1 (второй адрес)", n)
 	}
 	if set.Len() != 1 {
@@ -108,7 +108,7 @@ func TestDynamicSetClear(t *testing.T) {
 	installer := &fakeInstaller{}
 	set := NewDynamicSet(installer)
 
-	set.Observe(addrs("1.2.3.4", "5.6.7.8"), time.Hour, time.Now())
+	set.Observe("dtel.ru", addrs("1.2.3.4", "5.6.7.8"), time.Hour, time.Now())
 	set.Clear()
 
 	if len(installer.removed) != 2 {
@@ -125,9 +125,74 @@ func TestDynamicSetUnmapsV4(t *testing.T) {
 	installer := &fakeInstaller{}
 	set := NewDynamicSet(installer)
 
-	set.Observe([]netip.Addr{netip.MustParseAddr("::ffff:1.2.3.4")}, time.Hour, time.Now())
+	set.Observe("dtel.ru", []netip.Addr{netip.MustParseAddr("::ffff:1.2.3.4")}, time.Hour, time.Now())
 
 	if len(installer.added) != 1 || installer.added[0] != netip.MustParsePrefix("1.2.3.4/32") {
 		t.Errorf("получили %v, ждали 1.2.3.4/32", installer.added)
+	}
+}
+
+// Ради этого имена и запоминаются: удаление одного правила не должно стоить
+// всех выученных маршрутов остальных.
+func TestRetainDropsOnlyVanishedNames(t *testing.T) {
+	installer := &fakeInstaller{}
+	set := NewDynamicSet(installer)
+	now := time.Now()
+
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Hour, now)
+	set.Observe("example.com", addrs("5.6.7.8"), time.Hour, now)
+
+	// Правило example.com удалили — под правила подпадает только dtel.ru.
+	if n := set.Retain(func(name string) bool { return name == "dtel.ru" }); n != 1 {
+		t.Fatalf("снято %d маршрутов, ожидался один", n)
+	}
+
+	if len(installer.removed) != 1 || installer.removed[0].String() != "5.6.7.8/32" {
+		t.Errorf("сняли не то: %v", installer.removed)
+	}
+	if set.Len() != 1 {
+		t.Errorf("на учёте %d маршрутов, ожидался один", set.Len())
+	}
+}
+
+// За одним адресом CDN стоят десятки сайтов. Пока хоть одно имя подпадает под
+// правила, маршрут нужен — иначе удаление соседнего правила обрывало бы
+// работающий сайт.
+func TestRetainKeepsAddressHeldByAnotherName(t *testing.T) {
+	installer := &fakeInstaller{}
+	set := NewDynamicSet(installer)
+	now := time.Now()
+
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Hour, now)
+	set.Observe("example.com", addrs("1.2.3.4"), time.Hour, now)
+
+	if n := set.Retain(func(name string) bool { return name == "dtel.ru" }); n != 0 {
+		t.Fatalf("снято %d маршрутов, не должно было ни одного", n)
+	}
+	if len(installer.removed) != 0 {
+		t.Errorf("маршрут снят зря: %v", installer.removed)
+	}
+
+	// А когда исчезло и второе имя — маршрут уходит.
+	if n := set.Retain(func(string) bool { return false }); n != 1 {
+		t.Errorf("снято %d маршрутов, ожидался один", n)
+	}
+}
+
+// Имя запоминается и у уже известного адреса: иначе правило, добавленное
+// позже, не удержало бы маршрут при удалении первого.
+func TestRetainSeesNamesAddedToKnownAddress(t *testing.T) {
+	installer := &fakeInstaller{}
+	set := NewDynamicSet(installer)
+	now := time.Now()
+
+	set.Observe("dtel.ru", addrs("1.2.3.4"), time.Hour, now)
+	// Второе наблюдение маршрута не добавляет — только имя.
+	if n := set.Observe("example.com", addrs("1.2.3.4"), time.Hour, now); n != 0 {
+		t.Fatalf("маршрут поставлен повторно: %d", n)
+	}
+
+	if n := set.Retain(func(name string) bool { return name == "example.com" }); n != 0 {
+		t.Errorf("маршрут снят, хотя его держит example.com")
 	}
 }

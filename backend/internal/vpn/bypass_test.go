@@ -21,6 +21,10 @@ type fakeIP struct {
 	addFails bool
 	// routes — что печатает "ip route show <префикс>".
 	routes map[string][]string
+	// addBatches и delBatches — списки, ушедшие одним запуском ip. Нужны,
+	// чтобы проверить главное в пакетных операциях: что запуск один.
+	addBatches [][][]string
+	delBatches [][][]string
 }
 
 func (f *fakeIP) AddAddress(prefix, dev string) error { return nil }
@@ -40,6 +44,26 @@ func (f *fakeIP) AddRoute(args ...string) error {
 func (f *fakeIP) DelRoute(args ...string) error {
 	f.deleted = append(f.deleted, args)
 	return nil
+}
+
+func (f *fakeIP) AddRoutes(routes [][]string) []error {
+	f.addBatches = append(f.addBatches, routes)
+
+	errs := make([]error, len(routes))
+	for i, args := range routes {
+		errs[i] = f.AddRoute(args...)
+	}
+	return errs
+}
+
+func (f *fakeIP) DelRoutes(routes [][]string) []error {
+	f.delBatches = append(f.delBatches, routes)
+
+	errs := make([]error, len(routes))
+	for i, args := range routes {
+		errs[i] = f.DelRoute(args...)
+	}
+	return errs
 }
 
 func (f *fakeIP) PathTo(addr string) (iproute.Path, error) {

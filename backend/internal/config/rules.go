@@ -187,3 +187,55 @@ func (r *RoutingConfig) Validate() error {
 
 	return nil
 }
+
+// ParseRuleValue выводит вид правила из самого значения: 1.1.1.1 — адрес,
+// 10.0.0.0/8 — подсеть, .ru — зона, git.dtel.ru — домен.
+//
+// Нужен массовому вводу: там правила приходят списком по строке, и
+// спрашивать вид у каждой строки отдельно не у кого. Разбор намеренно
+// повторяет parseRule из окна (frontend/composables/useRuleDraft.ts) —
+// пользователь набирает список там же, и решение о виде обязано совпасть.
+//
+// Само значение после разбора проверяется обычным Validate: здесь решается
+// только вид, годность — не здесь.
+func ParseRuleValue(raw string) (RoutingRule, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return RoutingRule{}, errors.New("значение правила не может быть пустым")
+	}
+
+	rule := RoutingRule{Value: value, Enabled: true}
+
+	switch {
+	case strings.Contains(value, "/"):
+		rule.Type = RuleTypeCIDR
+	case strings.HasPrefix(value, "."):
+		rule.Type = RuleTypeZone
+		rule.Value = strings.ToLower(value)
+	default:
+		if _, err := netip.ParseAddr(value); err == nil {
+			rule.Type = RuleTypeIP
+		} else {
+			// Слово без точки доменом быть не пытается: домен верхнего
+			// уровня добавляют зоной, «.ru», а не «ru».
+			if !strings.Contains(value, ".") {
+				return RoutingRule{}, fmt.Errorf("%q — не правило: домен верхнего уровня пишется зоной, «.ru»", value)
+			}
+			rule.Type = RuleTypeDomain
+			rule.Value = strings.ToLower(value)
+		}
+	}
+
+	if err := rule.Validate(); err != nil {
+		return RoutingRule{}, err
+	}
+
+	return rule, nil
+}
+
+// SameRule сообщает, что два правила означают одно и то же. Сравнение по
+// виду и значению, без учёта регистра: список правил — это множество, и
+// «DTEL.ru» вторым правилом быть не должно.
+func SameRule(a, b RoutingRule) bool {
+	return a.Type == b.Type && strings.EqualFold(a.Value, b.Value)
+}

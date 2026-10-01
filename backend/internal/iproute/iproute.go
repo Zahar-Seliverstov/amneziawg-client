@@ -10,6 +10,8 @@ package iproute
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -28,6 +30,20 @@ type Tool interface {
 	// описывать его отдельным типом.
 	AddRoute(args ...string) error
 	DelRoute(args ...string) error
+
+	// AddRoutes и DelRoutes делают то же самое для целого списка, но одним
+	// запуском ip вместо запуска на маршрут.
+	//
+	// Разница не косметическая. Правил по доменам бывают сотни, и каждое имя
+	// даёт несколько адресов; пересборка маршрутизации ставила и снимала их
+	// по одному — сотни fork+exec подряд, по несколько миллисекунд каждый.
+	// Здесь это один процесс.
+	//
+	// Возвращают по ошибке на маршрут, в том же порядке: nil на удавшийся.
+	// Общей ошибки нет намеренно — вызывающий обязан знать, какие именно
+	// маршруты легли: он ведёт их учёт и по нему же потом снимает.
+	AddRoutes(routes [][]string) []error
+	DelRoutes(routes [][]string) []error
 
 	// PathTo сообщает, каким путём система пойдёт к адресу СЕЙЧАС, со всеми
 	// уже стоящими маршрутами. Спрашивать надо именно ядро: только оно знает
@@ -58,7 +74,7 @@ func Available() error {
 
 // New возвращает Tool поверх настоящей команды ip.
 func New() Tool {
-	return &cmdTool{run: runCommand}
+	return &cmdTool{run: runCommand, runBatch: runBatchCommand}
 }
 
 // runner выполняет команду ip и возвращает её вывод.
@@ -67,8 +83,14 @@ func New() Tool {
 // а проверить его иначе можно было бы только на машине с нужной сетью.
 type runner func(args ...string) (string, error)
 
+// batchRunner скармливает команде ip готовый список команд, по одной на
+// строку. Отдельно от runner, потому что здесь ввод идёт не аргументами, а
+// потоком: список маршрутов не помещается в командную строку и не должен.
+type batchRunner func(script string) (string, error)
+
 type cmdTool struct {
-	run runner
+	run      runner
+	runBatch batchRunner
 }
 
 func runCommand(args ...string) (string, error) {
@@ -111,6 +133,104 @@ func (t *cmdTool) AddRoute(args ...string) error {
 func (t *cmdTool) DelRoute(args ...string) error {
 	_, err := t.run(append([]string{"route", "del"}, args...)...)
 	return err
+}
+
+func (t *cmdTool) AddRoutes(routes [][]string) []error {
+	return t.batch("add", routes)
+}
+
+func (t *cmdTool) DelRoutes(routes [][]string) []error {
+	return t.batch("del", routes)
+}
+
+// batch выполняет список однотипных операций над маршрутами одним запуском.
+//
+// Ключ -force обязателен: без него ip прекращает работу на первой же неудаче,
+// а неудачи здесь ожидаемы и не смертельны — "File exists" на маршруте,
+// который уже стоит, "No such process" на снятом кем-то ещё. С -force он
+// доделывает список и сообщает о каждой неудаче отдельной строкой
+// "Command failed -:N", по которой и разбирается, что именно не легло.
+func (t *cmdTool) batch(op string, routes [][]string) []error {
+	errs := make([]error, len(routes))
+	if len(routes) == 0 {
+		return errs
+	}
+
+	// Один маршрут пакетом гнать незачем: обычный вызов и короче, и даёт
+	// внятный текст ошибки вместо номера строки.
+	if len(routes) == 1 {
+		if op == "add" {
+			errs[0] = t.AddRoute(routes[0]...)
+		} else {
+			errs[0] = t.DelRoute(routes[0]...)
+		}
+		return errs
+	}
+
+	var script strings.Builder
+	for _, args := range routes {
+		script.WriteString("route ")
+		script.WriteString(op)
+		script.WriteString(" ")
+		script.WriteString(strings.Join(args, " "))
+		script.WriteString("\n")
+	}
+
+	output, err := t.runBatch(script.String())
+	if err == nil {
+		return errs
+	}
+
+	failed := parseBatchFailures(output)
+
+	// Ни одной опознанной строки, а команда всё же отказала — значит отказала
+	// она целиком: не нашлась, не приняла ключ, не прочитала ввод. Считаем
+	// неудавшимися все: записать в учёт маршрут, которого нет, опаснее, чем
+	// не записать поставленный.
+	if len(failed) == 0 {
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+
+	for _, line := range failed {
+		if line >= 1 && line <= len(routes) {
+			errs[line-1] = fmt.Errorf("ip route %s %s: %w",
+				op, strings.Join(routes[line-1], " "), err)
+		}
+	}
+	return errs
+}
+
+// batchFailure выхватывает номер строки из "Command failed -:3".
+var batchFailure = regexp.MustCompile(`Command failed [^:]*:(\d+)`)
+
+// parseBatchFailures возвращает номера строк, на которых ip споткнулся.
+// Нумерация с единицы — так их печатает сам ip.
+func parseBatchFailures(output string) []int {
+	var lines []int
+
+	for _, match := range batchFailure.FindAllStringSubmatch(output, -1) {
+		n, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		lines = append(lines, n)
+	}
+
+	return lines
+}
+
+func runBatchCommand(script string) (string, error) {
+	cmd := exec.Command("ip", "-force", "-batch", "-")
+	cmd.Stdin = strings.NewReader(script)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("ip -batch: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
 }
 
 func (t *cmdTool) RoutesFor(prefix string) ([]string, error) {

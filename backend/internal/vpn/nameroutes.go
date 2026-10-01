@@ -73,13 +73,18 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 
 	set := routing.NewDynamicSet(installer)
 
+	// Сопоставитель кладём в атомарный указатель, а не захватываем здесь:
+	// правку правил по именам надо уметь применять под работающим
+	// посредником, не пересоздавая его.
+	m.nameMatcher.Store(matcher)
+
 	proxy := dnsproxy.New(func(answer dnsproxy.Answer) {
-		if !matcher.Match(answer.Name) {
+		if !m.nameMatcher.Load().Match(answer.Name) {
 			return
 		}
 		// Считаем взятые под учёт адреса, а не поставленные маршруты: часть
 		// из них уже идёт куда надо и своего маршрута не требует.
-		if n := set.Observe(answer.Addrs, answer.TTL, time.Now()); n > 0 {
+		if n := set.Observe(answer.Name, answer.Addrs, answer.TTL, time.Now()); n > 0 {
 			log.Printf("Правило по имени %s: адресов взято под учёт %d", answer.Name, n)
 		}
 	})
@@ -109,6 +114,8 @@ func (m *Manager) stopNameRouting() {
 	proxy, set, stop := m.dnsProxy, m.dynamicRoutes, m.sweepStop
 	m.dnsProxy, m.dynamicRoutes, m.sweepStop = nil, nil, nil
 	m.mu.Unlock()
+
+	m.nameMatcher.Store(nil)
 
 	if stop != nil {
 		close(stop)
@@ -244,9 +251,28 @@ func tunnelAddr(addresses []string) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// ruleResolveTimeout ограничивает разовый резолв доменного правила: без него
-// молчащий сервер имён задерживал бы настройку маршрутов на десятки секунд.
-const ruleResolveTimeout = 5 * time.Second
+// ruleResolveTimeout ограничивает разовый резолв одного доменного правила:
+// без него молчащий сервер имён задерживал бы настройку маршрутов на десятки
+// секунд.
+//
+// Полторы секунды, а не пять: это не последняя попытка узнать адреса имени, а
+// первая. Не успевшее правило подхватит посредник DNS в тот момент, когда имя
+// действительно спросят, — и подхватит адресом, который приложение как раз и
+// получило. Пять секунд здесь оплачивались задержкой применения правил, а
+// покупали лишь чуть более полный список на старте.
+const ruleResolveTimeout = 1500 * time.Millisecond
+
+// rulesResolveDeadline ограничивает резолв ВСЕГО набора правил.
+//
+// Отдельно от таймаута на имя, потому что параллельность его не заменяет:
+// сотня молчащих имён при восьми потоках — это по-прежнему десяток заходов
+// по полторы секунды подряд. Общий срок ставит предел тому, сколько времени
+// применение правил вообще вправе занять.
+const rulesResolveDeadline = 6 * time.Second
+
+// resolveParallel — сколько имён спрашиваем разом. Столько же, сколько в
+// rulesource: восемь одновременных вопросов сервер имён не смущают.
+const resolveParallel = 8
 
 // resolverFor возвращает резолвер, который спрашивает заданные серверы имён
 // напрямую. Если серверов нет, остаётся системный.
