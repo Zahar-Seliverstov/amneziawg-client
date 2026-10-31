@@ -1,123 +1,285 @@
-# AmneziaWG Client
+# AWG Client
 
-Клиент AmneziaWG для Linux и Windows с веб-интерфейсом. Служба на Go со
-встроенным ядром `amneziawg-go` поднимает туннель, интерфейс на Vue + Vite
-открывается в браузере. Ядро подключено библиотекой, отдельный бинарник
-ставить не нужно.
+Клиент [AmneziaWG](https://docs.amnezia.org/) для **Linux** и **Windows**.
+Служба поднимает туннель, интерфейс открывается в браузере:
+<http://127.0.0.1:7070>. Ядро `amneziawg-go` встроено — ставить отдельно
+ничего не нужно.
 
-## Интерфейс
+- подключения из файлов `.conf` AmneziaWG;
+- маршрутизация: через VPN только список или всё, кроме списка;
+- правила по домену, IP, подсети, наборам `geosite:`/`geoip:` и программам;
+- автоподключение при старте системы и переподключение при обрыве.
 
-Одна страница в стиле инструментов разработчика: строка состояния (время в
-туннеле, пинг, трафик), подключения слева, правила маршрутизации справа.
-Клавиши: `/` — поле правил, `c` — подключить или отключить, `,` — настройки.
+**Содержание:** [Установка](#установка) · [Первый запуск](#первый-запуск) ·
+[Правила](#правила-маршрутизации) · [Управление службой](#управление-службой) ·
+[Обновление](#обновление) · [Удаление](#удаление) ·
+[Неполадки](#если-что-то-не-работает) · [Сборка](#сборка-из-исходников)
 
-Список правил идёт через VPN или мимо него, вид правила определяется по самому
-значению. «Мимо VPN» — это «как без VPN»: если у системы есть свой путь (второй
-туннель, TUN прокси), трафик идёт им. Программу целиком можно отправить мимо
-туннеля правилом `app:minecraft` (только Linux).
+---
 
 ## Установка
 
-Готовые архивы — на [странице релизов][releases]. Собраны под x86_64.
+Архивы — на [странице релизов][releases], под x86_64.
 
-**Linux** (нужны systemd и iproute2):
+### Linux
+
+Нужны systemd и iproute2 (есть почти везде).
 
 ```sh
-tar xzf awg-client_<версия>_linux_amd64.tar.gz
+# скачать последнюю версию
+v=$(curl -fsSL https://api.github.com/repos/Zahar-Seliverstov/amneziawg-client/releases/latest \
+    | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fLO "https://github.com/Zahar-Seliverstov/amneziawg-client/releases/download/v$v/awg-client_${v}_linux_amd64.tar.gz"
+
+# распаковать и установить
+tar xzf "awg-client_${v}_linux_amd64.tar.gz"
 sudo awg-client/install.sh
 ```
 
-**Windows 10/11**: распаковать `awg-client_<версия>_windows_amd64.zip` и
-запустить `install.cmd` от имени администратора. Программа копируется в
-`C:\Program Files\AWG Client`, на рабочем столе появляется ярлык.
+Программа ставится в `/usr/local/lib/awg-client`, в меню приложений
+появляется «AWG Client».
 
-После установки интерфейс открыт на <http://127.0.0.1:7070>. Обе службы
-стартуют вместе с системой.
+### Windows 10/11
 
-Файлы можно сверить с `SHA256SUMS` из того же релиза:
+В **PowerShell** (обычном, не от администратора):
+
+```powershell
+# скачать последнюю версию
+$v = (Invoke-RestMethod https://api.github.com/repos/Zahar-Seliverstov/amneziawg-client/releases/latest).tag_name.TrimStart('v')
+Invoke-WebRequest "https://github.com/Zahar-Seliverstov/amneziawg-client/releases/download/v$v/awg-client_${v}_windows_amd64.zip" -OutFile awg-client.zip
+
+# распаковать и установить (Windows спросит права администратора)
+Expand-Archive awg-client.zip -DestinationPath awg-client -Force
+Start-Process 'awg-client\AWG Client\install.cmd' -Verb RunAs
+```
+
+Или руками: скачать `awg-client_<версия>_windows_amd64.zip`, распаковать,
+правой кнопкой по `install.cmd` → «Запуск от имени администратора».
+
+Программа ставится в `C:\Program Files\AWG Client`, на рабочем столе
+появляется ярлык «AWG Client».
+
+### Проверка контрольных сумм
+
+Скачайте `SHA256SUMS` из того же релиза.
 
 ```sh
+# Linux
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-[releases]: https://github.com/Zahar-Seliverstov/amneziawg-client/releases/latest
+```powershell
+# Windows: сравнить со строкой из SHA256SUMS
+(Get-FileHash awg-client.zip -Algorithm SHA256).Hash.ToLower()
+```
+
+---
+
+## Первый запуск
+
+1. Откройте <http://127.0.0.1:7070> (или ярлык «AWG Client»).
+2. **Подключения → + Добавить**: вставьте текст `.conf` или нажмите
+   «Открыть файл…».
+3. **Подключить** — кнопка справа в строке состояния (или клавиша `C`).
+
+Строка состояния показывает сервер, время в туннеле, пинг и трафик.
+Автоподключение включается во вкладке **Настройки**.
+
+| Клавиша | Действие |
+|---|---|
+| `/` | перейти к полю правил |
+| `C` | подключить или отключить |
+| `,` | настройки |
+| `Esc` | назад, закрыть подсказки |
+| `Ctrl+Enter` | сохранить форму |
+
+---
+
+## Правила маршрутизации
+
+Сначала выберите режим:
+
+- **только список** — через VPN идут правила из списка, остальное напрямую;
+- **всё, кроме списка** — через VPN идёт всё, правила из списка — напрямую.
+
+Правило вписывается в одно поле, вид определяется по значению. Можно
+вставить сразу список — по одному на строку или через пробел.
+
+| Пример | Что охватывает |
+|---|---|
+| `example.com` | домен со всеми поддоменами |
+| `.example` | вся зона: всё, что кончается на `.example` |
+| `full:www.example.com` | ровно это имя, без поддоменов |
+| `keyword:example` | все имена, где есть это слово |
+| `regexp:^cdn[0-9]+\.` | имена по регулярному выражению |
+| `203.0.113.10` | один адрес |
+| `198.51.100.0/24` | подсеть |
+| `geosite:youtube` | сайты категории из базы geosite.dat |
+| `geoip:nl` | сети страны из базы geoip.dat |
+| `app:firefox` | все соединения программы (только Linux) |
+| `app:discord/udp` | только UDP программы: голос, видео (только Linux) |
+
+Слово без точки (`youtube`) ищет категорию в базах и подсказывает её.
+Весь список можно править текстом («Править текстом»), выгрузить и загрузить
+файлом JSON или списком строк («Экспорт» / «Импорт…»).
+
+Базы `geosite.dat` и `geoip.dat` служба скачивает и обновляет сама раз в
+неделю; вручную — во вкладке **Настройки**.
+
+---
+
+## Управление службой
+
+Работают две службы: **`awg-service`** (туннель, маршруты, API на
+`127.0.0.1:7071`) и **`awg-ui`** (интерфейс на `127.0.0.1:7070`). Обе
+стартуют вместе с системой.
+
+### Linux
+
+```sh
+systemctl status awg-service awg-ui        # состояние
+sudo systemctl restart awg-service         # перезапуск (туннель переподключится)
+journalctl -u awg-service -f               # журнал в реальном времени
+journalctl -u awg-service --since -1h      # журнал за последний час
+curl -s http://127.0.0.1:7071/api/vpn/status   # состояние туннеля из API
+```
+
+### Windows (PowerShell)
+
+```powershell
+Get-Service awg-service, awg-ui            # состояние
+Restart-Service awg-service                # перезапуск (PowerShell от администратора)
+
+# журнал службы туннеля (PowerShell от администратора)
+Get-Content "$env:ProgramData\awg-client\logs\awg-service.log" -Tail 50 -Wait
+
+# состояние туннеля из API
+Invoke-RestMethod http://127.0.0.1:7070/api/vpn/status
+```
+
+Где что лежит:
+
+| | Linux | Windows |
+|---|---|---|
+| Программа | `/usr/local/lib/awg-client` | `C:\Program Files\AWG Client` |
+| Подключения и правила | `/var/lib/awg-client` | `%ProgramData%\awg-client` |
+| Журналы | `journalctl -u awg-service` | `%ProgramData%\awg-client\logs` |
+
+Папки с данными доступны только администраторам: в `.conf` лежат ключи.
+
+---
+
+## Обновление
+
+Скачайте новый архив и установите поверх — команды те же, что при
+[установке](#установка). Подключения и правила сохраняются.
+
+---
+
+## Удаление
+
+```sh
+# Linux
+sudo /usr/local/lib/awg-client/install.sh --uninstall
+```
+
+```powershell
+# Windows (PowerShell)
+Start-Process "$env:ProgramFiles\AWG Client\uninstall.cmd" -Verb RunAs
+```
+
+Подключения и правила остаются в `/var/lib/awg-client` или
+`%ProgramData%\awg-client` — удалите папку вручную, если они не нужны.
+
+---
+
+## Если что-то не работает
+
+**Интерфейс пишет «Нет связи со службой».** Служба `awg-service` не
+запущена — посмотрите её состояние и журнал (см.
+[Управление службой](#управление-службой)).
+
+**«Подключено», но сайты не открываются.**
+
+- Не включён ли второй VPN-клиент. Его блокировка трафика (kill switch)
+  режет чужие туннели, а два туннеля на один сервер мешают друг другу.
+  Оставьте включённым один.
+- Режим «только список»: через VPN идёт только список, остальное — напрямую.
+  Сайт, недоступный без VPN, нужно добавить в список (например,
+  `geosite:youtube`) или переключиться на «всё, кроме списка».
+
+**Пинг показывает «—».** Сервер не отвечает ни на ICMP, ни на TCP — на
+работу туннеля это не влияет.
+
+**Порт 7070 или 7071 занят.** Проверьте, кто его держит:
+
+```sh
+ss -ltnp | grep -E ':707[01]'                       # Linux
+```
+
+```powershell
+Get-NetTCPConnection -LocalPort 7070,7071 -State Listen   # Windows
+```
+
+---
 
 ## Сборка из исходников
 
-Нужны Go 1.25+, Node.js 20+, `make`, `curl` и `python3`.
+Нужны Go 1.25+, Node.js 22+, `make`, `curl`, `python3`.
 
 ```sh
+git clone https://github.com/Zahar-Seliverstov/amneziawg-client.git
+cd amneziawg-client
+
 ./install.sh      # Linux: собрать и установить
 make dist         # архивы для Linux и Windows в dist/
+make test         # go vet под обе ОС, тесты Go и интерфейса
 ```
 
 Windows-архив собирается на Linux кросс-компиляцией; `wintun.dll`
 скачивается с wintun.net со сверкой контрольной суммы.
 
-## Разработка
+### Разработка
 
 ```sh
 make dev-service   # служба (через sudo) с отдельным состоянием в backend/build/dev
 make dev-frontend  # интерфейс с горячей перезагрузкой на :5173, /api — в службу
-make dev-ui        # или собранный интерфейс через awg-ui на :7070
-make test          # go vet под обе ОС, тесты Go и тесты интерфейса
+make dev-ui        # собранный интерфейс через awg-ui на :7070
 ```
 
 ### Как устроено
 
-Два процесса, как у Tailscale и Mullvad, только вместо окна — браузер:
+- **`backend/cmd/awg-service`** — ядро, маршруты, DNS, состояние и HTTP-API.
+  Права администратора: root под systemd, LocalSystem в Windows.
+- **`backend/cmd/awg-ui`** — без прав (DynamicUser / LocalService): раздаёт
+  интерфейс и пересылает `/api` службе, поэтому CORS не нужен.
+- **`frontend/src`** — Vue: `api/` (клиент и типы), `lib/` (чистые функции с
+  тестами), `stores/` (общее состояние), `composables/`, `components/`.
 
-- **`awg-service`** (`backend/cmd/awg-service`) — ядро, маршруты, DNS,
-  состояние и HTTP-API на `127.0.0.1:7071`. Работает с правами
-  администратора: root под systemd, LocalSystem как служба Windows.
-  Состояние — в `/var/lib/awg-client` или `%ProgramData%\awg-client`,
-  доступ только администраторам;
-- **`awg-ui`** (`backend/cmd/awg-ui`) — без прав (DynamicUser в systemd,
-  LocalService в Windows). Раздаёт собранный интерфейс (`frontend/`) на
-  `127.0.0.1:7070` и пересылает `/api` службе. Страница и API живут на
-  одном адресе, поэтому CORS не нужен.
-
-Платформенные части спрятаны за интерфейсами и разделены файлами
-`_unix.go` / `_windows.go`:
+Платформенные части разделены файлами `_unix.go` / `_windows.go`:
 
 | Что | Linux | Windows |
 |---|---|---|
 | TUN | `/dev/net/tun` | wintun |
 | Адреса и маршруты (`internal/iproute`) | команда `ip` | IP Helper API |
-| Серверы имён (`internal/vpn/dns_*`) | resolvconf или `/etc/resolv.conf` | DNS интерфейса туннеля + метрика 0 |
+| Серверы имён (`internal/vpn/dns_*`) | resolvconf или `/etc/resolv.conf` | DNS интерфейса туннеля |
 | Запуск службой (`internal/service`) | юнит systemd | служба Windows |
 
-Оба порта слушают только петлевой адрес. От чужих страниц в браузере API
-закрыт проверкой `Host` и `Origin` (`internal/localguard`): это защищает от
-подделки запросов и от подмены DNS. От других пользователей той же машины
-он не закрыт — открыть интерфейс может любой, кто сидит за компьютером.
+Оба порта слушают только петлевой адрес; от чужих страниц в браузере API
+закрыт проверкой `Host` и `Origin` (`internal/localguard`).
 
-Проверить API вручную:
+### Выпуск релиза
 
-```sh
-curl http://127.0.0.1:7071/api/vpn/status
-```
-
-## Выпуск релиза
-
-Версия объявлена в одном месте — файле `VERSION` — и должна совпадать с
-тегом, иначе сборка в CI остановится. Служба получает номер на сборке, а
-интерфейс запрашивает его у службы.
+Версия — в файле `VERSION`, она должна совпадать с тегом.
 
 ```sh
-# 1. Поднять версию в VERSION и описать изменения в CHANGELOG.md
-# 2. Закоммитить, затем:
-git tag -a v1.2.3 -m "AWG Client 1.2.3"
-git push origin main v1.2.3
+# поднять VERSION, описать изменения в CHANGELOG.md, закоммитить
+git tag -a v2.1.0 -m "AWG Client 2.1.0"
+git push origin main v2.1.0
 ```
 
-Дальше всё делает [workflow](.github/workflows/release.yml): собирает
-архивы для Linux и Windows, считает контрольные суммы и публикует релиз с
-заметками из соответствующего раздела `CHANGELOG.md`.
+[Workflow](.github/workflows/release.yml) соберёт архивы для Linux и
+Windows, посчитает контрольные суммы и опубликует релиз с заметками из
+`CHANGELOG.md`.
 
-## Удаление
-
-- Linux: `sudo /usr/local/lib/awg-client/install.sh --uninstall`
-- Windows: `C:\Program Files\AWG Client\uninstall.cmd` от имени администратора
-
-Конфигурации остаются в `/var/lib/awg-client` или `%ProgramData%\awg-client`.
+[releases]: https://github.com/Zahar-Seliverstov/amneziawg-client/releases/latest
