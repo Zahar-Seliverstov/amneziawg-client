@@ -83,7 +83,10 @@ func tcpPing(ip net.IP, ports []string) (time.Duration, error) {
 	for _, port := range ports {
 		addr := net.JoinHostPort(ip.String(), port)
 
+		// Ответ отмечается отдельно от времени: часы Go на Windows грубые
+		// (до ~15 мс), и ответ из локальной сети замеряется как ровно ноль.
 		var best time.Duration
+		answered := false
 		for i := 0; i < pingAttempts; i++ {
 			start := time.Now()
 			conn, err := net.DialTimeout("tcp", addr, pingTimeout)
@@ -95,12 +98,13 @@ func tcpPing(ip net.IP, ports []string) (time.Duration, error) {
 			if conn != nil {
 				conn.Close()
 			}
-			if best == 0 || rtt < best {
+			if !answered || rtt < best {
 				best = rtt
 			}
+			answered = true
 		}
 
-		if best > 0 {
+		if answered {
 			return best, nil
 		}
 	}

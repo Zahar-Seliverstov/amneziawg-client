@@ -31,7 +31,10 @@ func icmpPing(ip net.IP) (time.Duration, error) {
 	id := os.Getpid() & 0xffff
 	dst := &net.IPAddr{IP: ip}
 
+	// Ответ отмечается отдельно от времени: часы Go на Windows грубые, и
+	// ответ из локальной сети замеряется как ровно ноль.
 	var best time.Duration
+	answered := false
 	for seq := 1; seq <= pingAttempts; seq++ {
 		rtt, err := icmpEcho(conn, dst, request, reply, proto, id, seq)
 		if err != nil {
@@ -40,11 +43,12 @@ func icmpPing(ip net.IP) (time.Duration, error) {
 			// пусть вызывающий сразу переходит к TCP.
 			break
 		}
-		if best == 0 || rtt < best {
+		if !answered || rtt < best {
 			best = rtt
 		}
+		answered = true
 	}
-	if best == 0 {
+	if !answered {
 		return 0, errors.New("нет эхо-ответа")
 	}
 	return best, nil

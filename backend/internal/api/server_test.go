@@ -248,10 +248,10 @@ func TestBatchRejectsPerRule(t *testing.T) {
 
 	// Вид выводится из значения, руками его никто не проставлял.
 	want := map[string]string{
-		"example.org":    config.RuleTypeDomain,
-		".ru":        config.RuleTypeZone,
-		"10.0.0.0/8": config.RuleTypeCIDR,
-		"1.1.1.1":    config.RuleTypeIP,
+		"example.org": config.RuleTypeDomain,
+		".ru":         config.RuleTypeZone,
+		"10.0.0.0/8":  config.RuleTypeCIDR,
+		"1.1.1.1":     config.RuleTypeIP,
 	}
 	for _, rule := range got.Added {
 		if want[rule.Value] != rule.Type {
@@ -369,10 +369,12 @@ func (a *applyRecorder) count() int {
 
 // watchApplies подменяет применение маршрутизации счётчиком и ускоряет
 // дебаунс: настоящие двести миллисекунд превратили бы тест в ожидание.
+// Меньше 100 мс нельзя: на Windows каждая правка с записью файла состояния
+// идёт дольше 15 мс, и таймер успевал сработать между правками.
 func watchApplies(s *Server) *applyRecorder {
 	rec := &applyRecorder{done: make(chan struct{}, 1)}
 	s.applyRouting = rec.apply
-	s.routingDelay = 15 * time.Millisecond
+	s.routingDelay = 100 * time.Millisecond
 	return rec
 }
 
@@ -397,7 +399,7 @@ func TestRapidEditsCollapseIntoOneApply(t *testing.T) {
 
 	// Ждём заведомо дольше паузы: за это время пришли бы и остальные
 	// девятнадцать применений, если бы они были.
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	if got := rec.count(); got != 1 {
 		t.Errorf("применений: %d, ожидалось одно", got)
@@ -463,7 +465,7 @@ func TestBatchAppliesOnce(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("маршрутизация так и не применилась")
 	}
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	if got := rec.count(); got != 1 {
 		t.Errorf("применений: %d, ожидалось одно", got)
@@ -485,7 +487,7 @@ func TestUnchangedBatchDoesNotApply(t *testing.T) {
 	}
 
 	doBatch(t, s, `{"add":["example.org","мусор с пробелами"]}`)
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	if got := rec.count(); got != 1 {
 		t.Errorf("применений: %d — пересборка пошла зря", got)

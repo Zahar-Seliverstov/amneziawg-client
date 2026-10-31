@@ -5,6 +5,17 @@
 
 ## [Не выпущено]
 
+## [2.0.1] — 2026-10-31
+
+### Исправлено
+
+- **Пинг на Windows.** Часы Go на Windows грубые (до ~15 мс), и ответ из
+  локальной сети замерялся как ровно ноль — а ноль считался признаком «ответа
+  не было». Пинг такого сервера показывался как «—». Ответ теперь отмечается
+  отдельно от времени, и в замере TCP, и в ICMP.
+- Тест схлопывания правок падал на Windows: пауза в 15 мс была короче одной
+  правки с записью файла состояния.
+
 ## [2.0.0] — 2026-10-31
 
 Клиент стал веб-приложением для **Linux и Windows**: служба поднимает
@@ -656,7 +667,8 @@
   поднимаются только после того, как пир ответил, иначе при недоступном
   сервере пропадала сеть целиком.
 
-[Не выпущено]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v2.0.0...HEAD
+[Не выпущено]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Zahar-Seliverstov/amneziawg-client/compare/v1.0.0...v1.1.0
