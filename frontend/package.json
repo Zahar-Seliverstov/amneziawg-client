@@ -3,19 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "nuxt build",
-    "dev": "nuxt dev",
-    "generate": "nuxt generate",
-    "preview": "nuxt preview",
-    "prepare": "nuxt prepare"
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.9.0",
-    "nuxt": "^3.17.0",
-    "vue": "^3.5.0"
+    "vue": "3.5.42"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.0.0"
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vitest": "4.0.8",
+    "vue-tsc": "3.3.14"
   }
 }

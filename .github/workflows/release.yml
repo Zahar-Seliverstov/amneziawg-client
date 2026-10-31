@@ -11,10 +11,9 @@ permissions:
 
 jobs:
   build:
-    name: Сборка пакетов
-    # Не ubuntu-latest: AppImage и .deb собираются под glibc той системы, где
-    # их собрали, поэтому берём самую старую поддерживаемую — иначе пакеты не
-    # заведутся на дистрибутивах старше раннера.
+    name: Сборка архивов
+    # Обе программы собираются без cgo, так что от glibc раннера архивы не
+    # зависят. Windows-версия собирается здесь же, кросс-компиляцией.
     runs-on: ubuntu-22.04
 
     steps:
@@ -24,30 +23,18 @@ jobs:
         id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # Расхождение версии в теге и в манифестах — ровно то, из-за чего в
+      # Расхождение версии в теге и в файле VERSION — ровно то, из-за чего в
       # релизе оказываются файлы с чужим номером. Ловим до сборки.
-      #
-      # Проверяем ВСЕ манифесты, а не один. Номер объявлен в трёх местах, и
-      # разъезжается ровно тот, который забыли: раньше сверялся только
-      # tauri.conf.json, и .deb мог уехать с чужим номером в имени пакета.
-      - name: Проверить, что версия в теге и в манифестах совпадает
+      - name: Проверить, что версия в теге и в VERSION совпадает
         run: |
           version='${{ steps.version.outputs.value }}'
           fail=0
 
-          check() {
-            if [ "$2" != "$version" ]; then
-              echo "::error::тег v$version, а в $1 версия ${2:-<не найдена>}"
-              fail=1
-            fi
-          }
-
-          check desktop/src-tauri/tauri.conf.json \
-            "$(python3 -c "import json;print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")"
-          check desktop/package.json \
-            "$(python3 -c "import json;print(json.load(open('desktop/package.json'))['version'])")"
-          check desktop/src-tauri/Cargo.toml \
-            "$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml)"
+          declared="$(cat VERSION)"
+          if [ "$declared" != "$version" ]; then
+            echo "::error::тег v$version, а в VERSION $declared"
+            fail=1
+          fi
 
           # CHANGELOG обязан описывать выпускаемую версию: из него берутся
           # заметки к релизу, и без раздела релиз выйдет пустым.
@@ -63,43 +50,16 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Собрать архивы для Linux и Windows
+        run: make dist
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-
-      - name: Системные зависимости Tauri
+      - name: Контрольные суммы
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            patchelf \
-            file
-
-      - name: Собрать .deb и AppImage
-        run: make desktop
-
-      # Tauri именует файлы по productName, и «AWG Client» превращается в
-      # «AWG.Client_1.0.0_amd64.deb». Приводим к имени пакета.
-      - name: Разложить артефакты
-        id: artifacts
-        run: |
-          set -eu
-          version='${{ steps.version.outputs.value }}'
-          bundle=desktop/src-tauri/target/release/bundle
-          mkdir -p dist
-          cp "$(find "$bundle/deb" -name '*.deb' -print -quit)" \
-             "dist/awg-client_${version}_amd64.deb"
-          cp "$(find "$bundle/appimage" -name '*.AppImage' -print -quit)" \
-             "dist/awg-client_${version}_amd64.AppImage"
-          (cd dist && sha256sum ./*.deb ./*.AppImage > SHA256SUMS)
-          ls -lh dist
+          cd dist
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          ls -lh
 
       - name: Заметки к релизу из CHANGELOG
         run: |
@@ -119,5 +79,8 @@ jobs:
         with:
           name: AWG Client ${{ steps.version.outputs.value }}
           body_path: release-notes.md
-          files: dist/*
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
           fail_on_unmatched_files: true

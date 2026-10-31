@@ -1,0 +1,289 @@
+/* Минималистичный интерфейс в духе инструментов разработчика: один
+   моноширинный шрифт, тонкие рамки, никаких теней и анимаций движения.
+   Отклик — мгновенная смена цвета, а не плавные переходы. */
+
+:root {
+  --bg: #0d1014;
+  --panel: #12161b;
+  --raise: #181d24;
+  --line: #242a33;
+  --line-strong: #323a46;
+  --text: #d5dae1;
+  --muted: #8a93a0;
+  --faint: #5c6573;
+  --accent: #5aa9ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f2564b;
+  --sel: rgba(90, 169, 255, 0.12);
+
+  /* Группы правил: у каждой свой цвет метки, чтобы список читался
+     с одного взгляда. */
+  --g-app: #c586f7;
+  --g-set: #e3a33b;
+  --g-name: #5aa9ff;
+  --g-addr: #3fb9a8;
+
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', Ubuntu, sans-serif;
+  --font: ui-monospace, 'JetBrains Mono', 'Cascadia Mono', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --fs: 14px;
+  --fs-s: 12px;
+  --row: 30px;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --raise: #f0f2f5;
+    --line: #dde1e7;
+    --line-strong: #c4cad3;
+    --text: #1d232b;
+    --muted: #5d6673;
+    --faint: #8b94a1;
+    --accent: #0a69da;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+    --sel: rgba(10, 105, 218, 0.09);
+    --g-app: #8250df;
+    --g-set: #b35900;
+    --g-name: #0a69da;
+    --g-addr: #0f7b6c;
+    color-scheme: light;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--fs)/1.5 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100%;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+ul {
+  list-style: none;
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: var(--sel);
+}
+
+/* ── Общие элементы ─────────────────────────────────────────────────── */
+
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+.mono {
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+/* Подпись над значением: «ПИНГ», «ПРИНЯТО». Мелко и приглушённо, чтобы
+   значение читалось первым. */
+.caption {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--raise);
+  white-space: nowrap;
+  transition: border-color 60ms, background-color 60ms, color 60ms;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.btn--primary {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--sel);
+  border-color: var(--accent);
+}
+
+.btn--danger {
+  border-color: var(--bad);
+  color: var(--bad);
+  background: transparent;
+}
+
+.btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.btn--sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.btn--busy {
+  cursor: progress;
+}
+
+.btn--busy::after {
+  content: '…';
+}
+
+.input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+textarea.input {
+  font-family: var(--font);
+  font-size: 13px;
+  height: auto;
+  min-height: 160px;
+  padding: 6px 8px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.input::placeholder {
+  color: var(--faint);
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field > span {
+  color: var(--muted);
+  font-size: var(--fs-s);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  color: var(--faint);
+  padding: 8px 0;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--faint);
+}
+
+.dot--on { background: var(--ok); }
+.dot--busy { background: var(--warn); }
+.dot--error,
+.dot--offline { background: var(--bad); }
+
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  color: var(--faint);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.check input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}

@@ -58,7 +58,7 @@ func planRoutingDelta(old, current *config.RoutingConfig) (routingDelta, bool) {
 	// Посредник DNS поднимается под правила по именам и останавливается без
 	// них. Появление первого такого правила и исчезновение последнего — это
 	// его запуск и остановка, то есть пересборка.
-	if routing.NewMatcher(old.Rules).Empty() != routing.NewMatcher(current.Rules).Empty() {
+	if hasNameRules(old.Rules) != hasNameRules(current.Rules) {
 		return routingDelta{}, false
 	}
 
@@ -94,12 +94,22 @@ func planRoutingDelta(old, current *config.RoutingConfig) (routingDelta, bool) {
 // needsNameRouting сообщает, есть ли среди правил хоть одно по имени, то есть
 // нужен ли вообще посредник DNS.
 func needsNameRouting(rc *config.RoutingConfig) bool {
-	return rc != nil && !routing.NewMatcher(rc.Rules).Empty()
+	return rc != nil && hasNameRules(rc.Rules)
+}
+
+// hasNameRules сообщает, есть ли среди включённых правил хоть одно по имени.
+func hasNameRules(rules []config.RoutingRule) bool {
+	for _, rule := range rules {
+		if rule.Enabled && isNameRule(rule) {
+			return true
+		}
+	}
+	return false
 }
 
 // isNameRule сообщает, обслуживается ли правило посредником DNS.
 func isNameRule(rule config.RoutingRule) bool {
-	return rule.Type == config.RuleTypeDomain || rule.Type == config.RuleTypeZone
+	return config.IsNameRule(rule.Type)
 }
 
 // empty сообщает, что править нечего: список правил переставили местами или
@@ -118,7 +128,7 @@ func (m *Manager) applyRoutingDelta(cfg *config.AmneziaWGConfig, rc *config.Rout
 	// было возможно только вместе с ним самим — с повторным bind на :53 и
 	// потерей всего, что он успел выучить.
 	if delta.names {
-		matcher := routing.NewMatcher(rc.Rules)
+		matcher := routing.NewMatcher(rc.Rules, m.sites())
 		m.nameMatcher.Store(matcher)
 
 		m.mu.RLock()
@@ -146,11 +156,8 @@ func (m *Manager) applyRoutingDelta(cfg *config.AmneziaWGConfig, rc *config.Rout
 		// Спрашиваем только новые имена: остальные уже разрешены, и их
 		// маршруты стоят.
 		resolver := resolverFor(parseDNSServers(cfg.Interface.DNS))
-		m.installRuleRoutes(rc.Mode, m.resolveRules(delta.added, resolver))
+		m.installRuleRoutes(rc.Mode, m.resolveRules(delta.added, resolver, hasIPv6Address(cfg.Interface.Address)))
 	}
 
-	// Решение о блокировке зависит от правил — не от списка целиком, а от
-	// того, остались ли в нём действующие исключения. Само переприменение
-	// пропускается, когда решение то же (см. killswitch.go).
-	m.syncKillSwitch(cfg, rc)
+	m.syncApps(cfg, rc)
 }

@@ -22,6 +22,12 @@ type Path struct {
 // ErrUnreachable — до адреса нет пути вовсе.
 var ErrUnreachable = errors.New("адрес недостижим")
 
+// ErrExists — такой маршрут уже стоит. Общий признак для обеих систем:
+// Linux сообщает об этом текстом ip («File exists»), Windows — кодом
+// ERROR_OBJECT_ALREADY_EXISTS, к тому же с локализованным текстом. Сверять
+// строки вызывающему нельзя — на русской Windows подстрока не найдётся.
+var ErrExists = errors.New("маршрут уже есть")
+
 // RouteArgs собирает хвост команды "ip route add", повторяющей этот путь для
 // заданного префикса.
 //

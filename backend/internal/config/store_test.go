@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/user/amnezia-web-client/internal/desktopuser"
 )
 
 const sampleConfig = `[Interface]
@@ -24,7 +23,7 @@ AllowedIPs = 0.0.0.0/0
 
 func newStore(t *testing.T) *AppConfig {
 	t.Helper()
-	return NewAppConfig(filepath.Join(t.TempDir(), "config.json"), desktopuser.User{})
+	return NewAppConfig(filepath.Join(t.TempDir(), "config.json"))
 }
 
 func addSample(t *testing.T, store *AppConfig, name string) AmneziaWGConfig {
@@ -53,7 +52,9 @@ func TestSaveIsAtomicAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("файл не создан: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
+	// На Windows права задаёт список доступа каталога (dir_windows.go), а
+	// биты режима файла ничего не значат.
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0600 {
 		t.Errorf("права файла %o, ожидались 0600: внутри приватные ключи", perm)
 	}
 
@@ -85,7 +86,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded := NewAppConfig(store.Path(), desktopuser.User{})
+	loaded := NewAppConfig(store.Path())
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -329,4 +330,17 @@ func mustJSON(t *testing.T, value string) string {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return string(encoded)
+}
+
+// Повторы правил из старых файлов отбрасываются при чтении.
+func TestSanitizeRoutingDropsDuplicates(t *testing.T) {
+	r := RoutingConfig{Mode: RoutingModeVPNList, Rules: []RoutingRule{
+		{ID: "a", Type: RuleTypeDomain, Value: "dev.example.com", Enabled: true},
+		{ID: "b", Type: RuleTypeDomain, Value: "DEV.example.com", Enabled: true},
+		{ID: "c", Type: RuleTypeIP, Value: "1.1.1.1", Enabled: true},
+	}}
+	sanitizeRouting(&r)
+	if len(r.Rules) != 2 || r.Rules[0].ID != "a" || r.Rules[1].ID != "c" {
+		t.Errorf("после чистки: %+v", r.Rules)
+	}
 }

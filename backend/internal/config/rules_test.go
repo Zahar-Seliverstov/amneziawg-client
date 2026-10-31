@@ -120,3 +120,83 @@ func TestAmneziaConfigCloneIsIndependent(t *testing.T) {
 		t.Error("копия делит массивы с оригиналом")
 	}
 }
+
+func TestParseRuleValuePrefixes(t *testing.T) {
+	cases := []struct {
+		in, typ, value string
+	}{
+		{"geoip:RU", RuleTypeGeoIP, "ru"},
+		{"geosite:geolocation-!cn", RuleTypeGeoSite, "geolocation-!cn"},
+		{"geosite:google@cn", RuleTypeGeoSite, "google@cn"},
+		{"full:WWW.google.com", RuleTypeFull, "www.google.com"},
+		{"keyword:goog", RuleTypeKeyword, "goog"},
+		{`regexp:^ads\.`, RuleTypeRegexp, `^ads\.`},
+		{"domain:localhost", RuleTypeDomain, "localhost"},
+		// Адрес IPv6 тоже с двоеточием, но приставкой не считается.
+		{"2001:db8::1", RuleTypeIP, "2001:db8::1"},
+		{".ru", RuleTypeZone, ".ru"},
+	}
+
+	for _, tc := range cases {
+		rule, err := ParseRuleValue(tc.in)
+		if err != nil {
+			t.Errorf("%q: %v", tc.in, err)
+			continue
+		}
+		if rule.Type != tc.typ || rule.Value != tc.value {
+			t.Errorf("%q → %s:%s, ждали %s:%s", tc.in, rule.Type, rule.Value, tc.typ, tc.value)
+		}
+	}
+
+	for _, bad := range []string{"geoip:ru@cn", "geoip:", "regexp:(", "keyword:a b", "geosite:Ю"} {
+		if _, err := ParseRuleValue(bad); err == nil {
+			t.Errorf("%q принято", bad)
+		}
+	}
+}
+
+// app: — программа по имени. Регистр не важен, путь и пробелы не годятся:
+// сравнивается с именем процесса, и путь в правиле никогда бы не совпал.
+func TestParseAppRule(t *testing.T) {
+	rule, err := ParseRuleValue("app:Minecraft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.Type != RuleTypeApp || rule.Value != "minecraft" {
+		t.Fatalf("app:Minecraft разобрано как %s:%s", rule.Type, rule.Value)
+	}
+
+	rule, err = ParseRuleValue("app:Vesktop/UDP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, udp := SplitApp(rule.Value); name != "vesktop" || !udp {
+		t.Fatalf("app:Vesktop/UDP разобрано как %q (udp=%v)", name, udp)
+	}
+
+	for _, bad := range []string{"app:/usr/bin/java", "app:my game", "app:x", "app:", "app:vesktop/tcp", "app:/udp", "app:x/udp"} {
+		if _, err := ParseRuleValue(bad); err == nil {
+			t.Errorf("%q принято, а не должно", bad)
+		}
+	}
+}
+
+// Опечатка в адресе не должна молча становиться доменом, который никогда
+// не разрешится: правило «работает», а трафик идёт не туда.
+func TestParseRuleValueMalformedAddress(t *testing.T) {
+	for _, value := range []string{"1.2.3.999", "1.2.3.4.5", "01.2.3.4"} {
+		if r, err := ParseRuleValue(value); err == nil {
+			t.Errorf("%q принят как %s %q", value, r.Type, r.Value)
+		}
+	}
+
+	r, err := ParseRuleValue("1.1.1.1.")
+	if err != nil || r.Type != RuleTypeIP || r.Value != "1.1.1.1" {
+		t.Errorf("1.1.1.1. → %s %q, %v; ожидался адрес 1.1.1.1", r.Type, r.Value, err)
+	}
+
+	// Цифры в начале имени — это нормально.
+	if r, err := ParseRuleValue("4pda.to"); err != nil || r.Type != RuleTypeDomain {
+		t.Errorf("4pda.to → %s, %v", r.Type, err)
+	}
+}

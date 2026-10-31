@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 )
 
@@ -36,11 +37,63 @@ const (
 	RuleTypeDomain RuleType = "domain"
 	// RuleTypeZone — доменная зона: .ru
 	RuleTypeZone RuleType = "zone"
+	// RuleTypeFull — ровно это имя, без поддоменов: full:www.google.com
+	RuleTypeFull RuleType = "full"
+	// RuleTypeKeyword — имя, содержащее подстроку: keyword:google
+	RuleTypeKeyword RuleType = "keyword"
+	// RuleTypeRegexp — имя по регулярному выражению: regexp:^ads\.
+	RuleTypeRegexp RuleType = "regexp"
+	// RuleTypeGeoIP — сети из базы geoip.dat: geoip:ru
+	RuleTypeGeoIP RuleType = "geoip"
+	// RuleTypeGeoSite — имена из базы geosite.dat: geosite:youtube
+	RuleTypeGeoSite RuleType = "geosite"
+	// RuleTypeApp — программа по имени: app:minecraft. Решается не адресом и
+	// не именем, а тем, какой процесс открыл соединение (см. vpn/apps_linux.go).
+	RuleTypeApp RuleType = "app"
 )
 
 // RuleTypes перечисляет все допустимые виды правил. Единственный источник
 // правды: раньше этот список был продублирован в трёх местах и разъезжался.
-var RuleTypes = []RuleType{RuleTypeIP, RuleTypeCIDR, RuleTypeDomain, RuleTypeZone}
+var RuleTypes = []RuleType{
+	RuleTypeIP, RuleTypeCIDR, RuleTypeDomain, RuleTypeZone,
+	RuleTypeFull, RuleTypeKeyword, RuleTypeRegexp, RuleTypeGeoIP, RuleTypeGeoSite,
+	RuleTypeApp,
+}
+
+// prefixedTypes — виды, которые пишутся с приставкой «вид:значение», как в
+// xray. Остальные узнаются по самому значению. domain: — тоже приставка:
+// ею имя без точки можно записать доменом явно.
+var prefixedTypes = map[string]RuleType{
+	"domain":  RuleTypeDomain,
+	"full":    RuleTypeFull,
+	"keyword": RuleTypeKeyword,
+	"regexp":  RuleTypeRegexp,
+	"geoip":   RuleTypeGeoIP,
+	"geosite": RuleTypeGeoSite,
+	"app":     RuleTypeApp,
+}
+
+// geoTag — имя категории базы и, у geosite, атрибуты через @: ru-blocked,
+// geolocation-!cn, google@cn.
+var geoTag = regexp.MustCompile(`^[a-z0-9][a-z0-9!_.-]*(@[a-z0-9!_-]+)*$`)
+
+// appName — имя программы или слово из её командной строки: minecraft, java,
+// firefox, steam. Без пробелов и путей: сравнивается с именем процесса, и
+// путь в правиле означал бы, что пользователь ждёт совпадения, которого не
+// будет.
+var appName = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{1,63}$`)
+
+// AppUDPSuffix — хвост правила app:, берущий у программы только UDP:
+// app:vesktop/udp. Нужен там, где протоколы программы обязаны идти разными
+// путями: у Discord вход и текст идут по TCP через VPN (провайдер режет TCP к
+// Cloudflare), а голос и стримы по UDP — напрямую, без лишней задержки.
+const AppUDPSuffix = "/udp"
+
+// SplitApp разбирает значение правила app: на имя программы и признак
+// «только UDP».
+func SplitApp(value string) (name string, udpOnly bool) {
+	return strings.CutSuffix(value, AppUDPSuffix)
+}
 
 // ValidRuleType сообщает, известен ли вид правила.
 func ValidRuleType(t RuleType) bool {
@@ -94,6 +147,36 @@ func (r *RoutingRule) Validate() error {
 		if err := validateHostname(strings.TrimPrefix(value, ".")); err != nil {
 			return fmt.Errorf("%q не похоже на доменную зону: %w", value, err)
 		}
+
+	case RuleTypeFull:
+		if err := validateHostname(strings.TrimSuffix(value, ".")); err != nil {
+			return fmt.Errorf("%q не похоже на доменное имя: %w", value, err)
+		}
+
+	case RuleTypeKeyword:
+		if strings.ContainsAny(value, " \t/\\:@") || len(value) > 253 {
+			return fmt.Errorf("%q — не часть имени", value)
+		}
+
+	case RuleTypeRegexp:
+		if len(value) > 1000 {
+			return errors.New("слишком длинное выражение")
+		}
+		if _, err := regexp.Compile(value); err != nil {
+			return fmt.Errorf("выражение %q не разобрано: %v", value, err)
+		}
+
+	case RuleTypeApp:
+		value = strings.ToLower(value)
+		if name, _ := SplitApp(value); !appName.MatchString(name) {
+			return fmt.Errorf("%q не похоже на имя программы: нужно слово вроде minecraft или firefox, для одного UDP — vesktop/udp", value)
+		}
+
+	case RuleTypeGeoIP, RuleTypeGeoSite:
+		value = strings.ToLower(value)
+		if !geoTag.MatchString(value) || (r.Type == RuleTypeGeoIP && strings.Contains(value, "@")) {
+			return fmt.Errorf("%q не похоже на категорию %s", value, r.Type)
+		}
 	}
 
 	r.Value = value
@@ -113,7 +196,14 @@ func validateHostname(name string) error {
 		return errors.New("имя содержит недопустимые символы")
 	}
 
-	for _, label := range strings.Split(name, ".") {
+	labels := strings.Split(name, ".")
+	// Домена верхнего уровня из одних цифр не бывает (RFC 3696), а вот
+	// опечатка в адресе выглядит именно так: 1.2.3.999, 10.0.0.1.5.
+	if last := labels[len(labels)-1]; last != "" && strings.Trim(last, "0123456789") == "" {
+		return errors.New("похоже на адрес с ошибкой: последняя часть имени — число")
+	}
+
+	for _, label := range labels {
 		if label == "" {
 			return errors.New("пустая часть имени")
 		}
@@ -189,7 +279,9 @@ func (r *RoutingConfig) Validate() error {
 }
 
 // ParseRuleValue выводит вид правила из самого значения: 1.1.1.1 — адрес,
-// 10.0.0.0/8 — подсеть, .ru — зона, git.dtel.ru — домен.
+// 10.0.0.0/8 — подсеть, .ru — зона, git.example.org — домен. Наборы и особые
+// виды имён пишутся с приставкой, как в xray: geoip:ru, geosite:youtube,
+// full:, keyword:, regexp:.
 //
 // Нужен массовому вводу: там правила приходят списком по строке, и
 // спрашивать вид у каждой строки отдельно не у кого. Разбор намеренно
@@ -206,6 +298,20 @@ func ParseRuleValue(raw string) (RoutingRule, error) {
 
 	rule := RoutingRule{Value: value, Enabled: true}
 
+	if kind, rest, ok := strings.Cut(value, ":"); ok {
+		if t, known := prefixedTypes[strings.ToLower(kind)]; known {
+			rule.Type = t
+			rule.Value = strings.TrimSpace(rest)
+			if t != RuleTypeRegexp {
+				rule.Value = strings.ToLower(rule.Value)
+			}
+			if err := rule.Validate(); err != nil {
+				return RoutingRule{}, err
+			}
+			return rule, nil
+		}
+	}
+
 	switch {
 	case strings.Contains(value, "/"):
 		rule.Type = RuleTypeCIDR
@@ -213,8 +319,10 @@ func ParseRuleValue(raw string) (RoutingRule, error) {
 		rule.Type = RuleTypeZone
 		rule.Value = strings.ToLower(value)
 	default:
-		if _, err := netip.ParseAddr(value); err == nil {
+		// Точка в конце — полная запись имени, «1.1.1.1.» всё равно адрес.
+		if _, err := netip.ParseAddr(strings.TrimSuffix(value, ".")); err == nil {
 			rule.Type = RuleTypeIP
+			rule.Value = strings.TrimSuffix(value, ".")
 		} else {
 			// Слово без точки доменом быть не пытается: домен верхнего
 			// уровня добавляют зоной, «.ru», а не «ru».
@@ -233,9 +341,19 @@ func ParseRuleValue(raw string) (RoutingRule, error) {
 	return rule, nil
 }
 
+// IsNameRule сообщает, решается ли правило по имени — то есть в момент ответа
+// DNS, а не заранее известным адресом.
+func IsNameRule(t RuleType) bool {
+	switch t {
+	case RuleTypeDomain, RuleTypeZone, RuleTypeFull, RuleTypeKeyword, RuleTypeRegexp, RuleTypeGeoSite:
+		return true
+	}
+	return false
+}
+
 // SameRule сообщает, что два правила означают одно и то же. Сравнение по
 // виду и значению, без учёта регистра: список правил — это множество, и
-// «DTEL.ru» вторым правилом быть не должно.
+// «EXAMPLE.org» вторым правилом быть не должно.
 func SameRule(a, b RoutingRule) bool {
 	return a.Type == b.Type && strings.EqualFold(a.Value, b.Value)
 }

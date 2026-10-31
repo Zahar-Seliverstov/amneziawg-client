@@ -49,11 +49,6 @@ type ConnectionStatus struct {
 	// только потоком.
 	RoutingError string `json:"routing_error,omitempty"`
 
-	// KillSwitch — блокировка трафика мимо туннеля сейчас действует.
-	// Важна именно во время разрыва: без неё «Переподключение» выглядит
-	// одинаково и когда трафик закрыт, и когда он утекает открытым.
-	KillSwitch bool `json:"kill_switch"`
-
 	// Statistics
 	BytesReceived uint64     `json:"bytes_received"`
 	BytesSent     uint64     `json:"bytes_sent"`

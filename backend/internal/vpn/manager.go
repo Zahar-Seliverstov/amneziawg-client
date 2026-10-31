@@ -5,8 +5,8 @@ package vpn
 //
 // Частности лежат рядом и в этот порядок только вставляются: состояние и
 // оповещения — status.go, политика повторов — retry.go, наблюдение за живым
-// туннелем — watch.go, адреса интерфейса — link.go, маршруты, серверы имён и
-// блокировка — routes.go, конфигурация ядра — uapi.go.
+// туннелем — watch.go, адреса интерфейса — link.go, маршруты и серверы имён —
+// routes.go, конфигурация ядра — uapi.go.
 
 import (
 	"context"
@@ -22,7 +22,6 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
-	"github.com/user/amnezia-web-client/internal/firewall"
 	"github.com/user/amnezia-web-client/internal/iproute"
 	"github.com/user/amnezia-web-client/internal/routing"
 )
@@ -82,10 +81,6 @@ type Manager struct {
 	// маршрутов. Теперь правила подменяются под работающим посредником.
 	nameMatcher atomic.Pointer[routing.Matcher]
 
-	// killSwitchApplied — решение о блокировке, которое уже применено. Пустое
-	// значит «неизвестно, применить заново». Только под routeMu.
-	killSwitchApplied *killSwitchDecision
-
 	// ruleRoutes — маршруты, поставленные по правилам маршрутизации, и то,
 	// какие правила их держат. Отдельно от installedRoutes: те описывают
 	// устройство туннеля и меняются только вместе с соединением, а эти
@@ -120,14 +115,6 @@ type Manager struct {
 	// маршруты, и без неё туннель поднимется, но трафик в него не пойдёт.
 	ipToolErr error
 
-	// Блокировка трафика мимо туннеля. driver — чем блокируем (nil, если в
-	// системе нечем), driverErr — почему нечем, killSwitchOn — настройка
-	// пользователя. Всё под mu; сами вызовы Apply и Clear идут под routeMu
-	// вместе с маршрутами.
-	firewallDriver firewall.Driver
-	firewallErr    error
-	killSwitchOn   bool
-
 	// Паузы между попытками переподключения. Поля, а не константы: иначе
 	// проверить политику повторов можно было бы только реальным ожиданием
 	// в секундах.
@@ -138,6 +125,15 @@ type Manager struct {
 	dnsProxy      *dnsproxy.Proxy
 	dynamicRoutes *routing.DynamicSet
 	sweepStop     chan struct{}
+
+	// geo — базы geoip/geosite для правил-наборов, см. georoutes.go. nil —
+	// баз нет, и такие правила ничего не покрывают.
+	geo GeoSource
+
+	// policy — маршрутизация по политикам: свои маршруты в своей таблице и
+	// правила для программ (policy.go). nil — её нет (Windows, тесты), и
+	// маршруты ложатся в общую таблицу.
+	policy policyRouter
 }
 
 // NewManager creates a new VPN manager
@@ -160,24 +156,13 @@ func NewManager() *Manager {
 	if err := iproute.Available(); err != nil {
 		m.ipToolErr = err
 		log.Printf("ВНИМАНИЕ: %v. Подключение работать не будет", err)
+	} else {
+		m.policy = newPolicyRouter()
 	}
 
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
 	// resolv.conf, указывающим на исчезнувший адрес туннеля.
 	restoreOrphanedDNS()
-
-	// Блокировка тоже переживает падение процесса — в этом её смысл, но
-	// после смерти клиента она оставила бы машину без сети навсегда.
-	if driver, err := firewall.Detect(); err == nil {
-		m.firewallDriver = driver
-		if err := driver.Clear(); err != nil {
-			log.Printf("Не удалось снять блокировку от прошлого запуска: %v", err)
-		}
-	} else {
-		// Подробности — в журнал: в интерфейс уйдёт короткое объяснение.
-		log.Printf("Блокировка трафика мимо туннеля недоступна: %v", err)
-		m.firewallErr = err
-	}
 
 	go m.notifyLoop()
 
@@ -390,6 +375,8 @@ func (m *Manager) releaseSystem() {
 	// Посредник DNS останавливается первым: он ставит маршруты сам, и его
 	// последний ответ не должен обогнать уборку.
 	m.stopNameRouting()
+	// Программы возвращаются на место: без туннеля их метке некуда вести.
+	m.releaseApps()
 	// Записи "via <шлюз>" висят на физическом интерфейсе и удалением awg0 не
 	// убираются — без этого они копились бы после каждой попытки.
 	m.flushRoutes()
@@ -397,9 +384,6 @@ func (m *Manager) releaseSystem() {
 	// сервер мог переехать, и держаться за прежний адрес значит не подняться
 	// вовсе.
 	m.endpointAddrs = nil
-	// Правила firewall уходят вместе с интерфейсом: следующее соединение
-	// ставит их заново, каким бы ни было решение.
-	m.forgetKillSwitch()
 	m.routeMu.Unlock()
 
 	m.dns.Restore()
@@ -422,13 +406,6 @@ func (m *Manager) releaseSystem() {
 // в интерфейсе оставалось одно слово без причины. Сбрасывает его либо новое
 // подключение, либо явное отключение.
 func (m *Manager) finish() {
-	// Блокировку снимаем до захвата mu: она берёт routeMu, а порядок
-	// «сначала routeMu, потом mu» держится по всему менеджеру.
-	m.routeMu.Lock()
-	m.clearKillSwitch()
-	m.forgetKillSwitch()
-	m.routeMu.Unlock()
-
 	m.mu.Lock()
 	prevState, prevErr := m.status.State, m.status.Error
 

@@ -55,8 +55,27 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 		if routesUp {
 			return nil
 		}
-		if err := m.configureTraffic(cfg, routing); err != nil {
-			return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
+		// Правила берутся свежие, а не те, что были при старте подключения:
+		// пока шло рукопожатие, их могли поправить из интерфейса, и ApplyRouting
+		// в это время только запоминает правку (см. там). Поправили и во время
+		// настройки — настраиваем ещё раз, иначе правка потерялась бы.
+		for {
+			m.mu.RLock()
+			if m.routingConfig != nil {
+				routing = m.routingConfig
+			}
+			m.mu.RUnlock()
+
+			if err := m.configureTraffic(cfg, routing); err != nil {
+				return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
+			}
+
+			m.mu.RLock()
+			changed := m.routingConfig != nil && m.routingConfig != routing
+			m.mu.RUnlock()
+			if !changed {
+				break
+			}
 		}
 		routesUp = true
 		return nil

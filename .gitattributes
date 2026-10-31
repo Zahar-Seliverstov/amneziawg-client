@@ -1,0 +1,3 @@
+# Командные файлы Windows ломаются на LF: метки и goto теряются.
+*.cmd text eol=crlf
+*.ico binary

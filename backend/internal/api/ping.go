@@ -5,7 +5,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"syscall"
 	"time"
 
 	"github.com/user/amnezia-web-client/internal/config"
@@ -28,8 +27,13 @@ type pingResponse struct {
 	Error   string  `json:"error,omitempty"`
 }
 
-// handlePing меряет задержку до сервера VPN установкой TCP-соединения.
-// Замер идёт В ОБХОД туннеля: адрес эндпоинта исключён из него отдельным
+// handlePing меряет задержку до сервера VPN: эхо-запросом ICMP, а если
+// сервер на него молчит — установкой TCP-соединения.
+//
+// ICMP первым, потому что серверы AmneziaWG обычно закрыты по TCP целиком:
+// туннель идёт по UDP, и замер одним TCP всегда кончался «Сервер не
+// отвечает», хотя сервер был жив. Служба работает от root (LocalSystem на
+// Windows) и сырой сокет ICMP открыть может. Замер идёт В ОБХОД туннеля: адрес эндпоинта исключён из него отдельным
 // bypass-маршрутом, который ставит vpn.Manager, — так что это чистая
 // сетевая задержка до сервера, без шифрования и обработки на нём.
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +57,10 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rtt, err := tcpPing(ip, pingPorts(port))
+	rtt, err := icmpPing(ip)
+	if err != nil {
+		rtt, err = tcpPing(ip, pingPorts(port))
+	}
 	if err != nil {
 		jsonResponse(w, pingResponse{Error: "Сервер не отвечает"})
 		return
@@ -82,7 +89,7 @@ func tcpPing(ip net.IP, ports []string) (time.Duration, error) {
 			conn, err := net.DialTimeout("tcp", addr, pingTimeout)
 			rtt := time.Since(start)
 
-			if err != nil && !errors.Is(err, syscall.ECONNREFUSED) {
+			if err != nil && !connRefused(err) {
 				break // Молчит: ждать остальные попытки на этом порту незачем.
 			}
 			if conn != nil {

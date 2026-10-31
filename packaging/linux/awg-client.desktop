@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AWG Client
+Comment=Клиент AmneziaWG в браузере
+Exec=xdg-open http://127.0.0.1:7070
+Icon=awg-client
+Terminal=false
+Categories=Network;

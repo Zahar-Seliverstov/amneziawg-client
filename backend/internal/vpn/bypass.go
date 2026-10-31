@@ -29,6 +29,13 @@ import (
 // Второе значение — нужно ли вообще что-то ставить: путь мимо туннеля может
 // уже существовать, и тогда самое верное действие — не трогать его.
 func (m *Manager) bypassRoute(prefix string) (args []string, needed bool, err error) {
+	// С маршрутизацией по политикам путь не нужен вовсе: throw выводит адрес
+	// из нашей таблицы, и дальше его ведёт система — роутером, вторым VPN или
+	// своим маршрутом, как вела бы без туннеля (policy.go).
+	if m.policy != nil {
+		return m.throwRoute(prefix), true, nil
+	}
+
 	path, err := m.ip.PathTo(iproute.Host(prefix))
 	if err != nil {
 		return nil, false, err

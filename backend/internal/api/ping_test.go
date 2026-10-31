@@ -9,9 +9,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/user/amnezia-web-client/internal/autostart"
 	"github.com/user/amnezia-web-client/internal/config"
-	"github.com/user/amnezia-web-client/internal/desktopuser"
+	"github.com/user/amnezia-web-client/internal/geodata"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
@@ -110,7 +109,7 @@ func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
 	t.Helper()
 	dir := t.TempDir()
 
-	appCfg := config.NewAppConfig(filepath.Join(dir, "config.json"), desktopuser.User{})
+	appCfg := config.NewAppConfig(filepath.Join(dir, "config.json"))
 	for _, c := range cfgs {
 		appCfg.AddConfig(c)
 	}
@@ -118,7 +117,7 @@ func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
 		appCfg.SetSelectedConfig(cfgs[0].ID)
 	}
 
-	return NewServer(appCfg, vpn.NewManager(), autostart.NewManager(filepath.Join(dir, "a.desktop"), ""))
+	return NewServer(appCfg, vpn.NewManager(), geodata.Open(t.TempDir()))
 }
 
 func doPing(t *testing.T, s *Server) pingResponse {

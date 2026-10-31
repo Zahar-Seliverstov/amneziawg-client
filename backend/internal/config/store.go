@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/user/amnezia-web-client/internal/desktopuser"
 )
 
 // appState — ровно то, что лежит в config.json.
@@ -27,29 +25,9 @@ type appState struct {
 	Settings         AppSettings   `json:"settings"`
 }
 
-// clone возвращает полностью независимую копию состояния.
-func (s appState) clone() appState {
-	out := s
-
-	if s.Configs != nil {
-		out.Configs = make([]AmneziaWGConfig, len(s.Configs))
-		for i, cfg := range s.Configs {
-			out.Configs[i] = cfg.Clone()
-		}
-	}
-	out.Routing = s.Routing.Clone()
-
-	return out
-}
-
 // AppSettings holds user preferences
 type AppSettings struct {
 	Autoconnect bool `json:"autoconnect"`
-
-	// KillSwitch — не выпускать трафик мимо туннеля. Хранится здесь, но
-	// переключается своим эндпоинтом: у блокировки есть доступность, и
-	// включать её нужно вместе с применением на живом туннеле.
-	KillSwitch bool `json:"kill_switch"`
 }
 
 // AppConfig — состояние приложения и единственная точка доступа к нему.
@@ -66,18 +44,12 @@ type AppConfig struct {
 	// configPath задаётся при создании и больше не меняется, поэтому читается
 	// без блокировки.
 	configPath string
-
-	// owner — пользователь рабочего стола. Служба работает от root, а
-	// config.json лежит в доме пользователя: без передачи владения файл с
-	// его же ключами остался бы для него недоступным.
-	owner desktopuser.User
 }
 
 // NewAppConfig creates a new application configuration
-func NewAppConfig(configPath string, owner desktopuser.User) *AppConfig {
+func NewAppConfig(configPath string) *AppConfig {
 	return &AppConfig{
 		configPath: configPath,
-		owner:      owner,
 		state: appState{
 			Configs: []AmneziaWGConfig{},
 			Routing: RoutingConfig{
@@ -129,12 +101,6 @@ func (c *AppConfig) Load() error {
 // восстановить которые больше неоткуда.
 func (c *AppConfig) quarantine(cause error) error {
 	backup := fmt.Sprintf("%s.corrupt-%s", c.configPath, time.Now().Format("20060102-150405"))
-
-	// Владельца переносим и на отодвинутый файл: разбирать его руками и
-	// вытаскивать ключи будет пользователь, а не root.
-	if err := c.owner.Own(c.configPath); err != nil {
-		log.Printf("Не удалось передать повреждённый файл настроек пользователю: %v", err)
-	}
 
 	if err := os.Rename(c.configPath, backup); err != nil {
 		// Отодвинуть не вышло — дальше идти нельзя: следующее же сохранение
@@ -195,6 +161,21 @@ func sanitizeRouting(r *RoutingConfig) {
 			log.Printf("Правило маршрутизации отброшено: %v", err)
 			continue
 		}
+		// Повтор правила — наследие версий, где служба повторы не
+		// отсеивала: в списке он виден дважды, а убрать его можно только
+		// вместе с оригиналом.
+		dup := false
+		for _, other := range kept {
+			if SameRule(other, rule) {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			log.Printf("Повтор правила %s:%s отброшен", rule.Type, rule.Value)
+			continue
+		}
+
 		if rule.ID == "" || seen[rule.ID] {
 			rule.ID = GenerateID()
 		}
@@ -216,15 +197,11 @@ func (c *AppConfig) Save() error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(c.configPath), 0700); err != nil {
+	if err := EnsurePrivateDir(filepath.Dir(c.configPath)); err != nil {
 		return err
 	}
 
-	if err := c.owner.Own(filepath.Dir(c.configPath)); err != nil {
-		return err
-	}
-
-	return writeFileAtomic(c.configPath, data, 0600, c.owner)
+	return writeFileAtomic(c.configPath, data, 0600)
 }
 
 // writeFileAtomic записывает файл так, что читатель видит либо прежнее
@@ -235,12 +212,7 @@ func (c *AppConfig) Save() error {
 // конфигураций вместе с приватными ключами. Сохраняем во временный файл в том
 // же каталоге, сбрасываем на диск и переименовываем — переименование в
 // пределах файловой системы неделимо.
-//
-// Владельца выставляем до переименования: под готовым именем файл обязан
-// появиться сразу правильным, иначе между rename и chown он на мгновение
-// принадлежит root — и падение в этот зазор оставляет пользователя без
-// доступа к собственным ключам.
-func writeFileAtomic(path string, data []byte, perm os.FileMode, owner desktopuser.User) error {
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
@@ -275,10 +247,6 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode, owner desktopus
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := owner.Own(tmpName); err != nil {
-		return err
-	}
-
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}

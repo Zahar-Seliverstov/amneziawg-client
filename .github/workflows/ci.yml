@@ -45,8 +45,31 @@ jobs:
         working-directory: backend
         run: go test -short -race ./...
 
+  # Windows-половина службы (маршруты, DNS, служба Windows) на Linux только
+  # компилируется. Здесь она хотя бы собирается и проходит тесты на настоящей
+  # системе.
+  backend-windows:
+    name: Backend (Go, Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Тесты
+        working-directory: backend
+        run: go test -short ./...
+
   frontend:
-    name: Frontend (Nuxt)
+    name: Frontend (Vite)
     runs-on: ubuntu-22.04
 
     steps:
@@ -54,7 +77,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -62,6 +85,10 @@ jobs:
         working-directory: frontend
         run: npm ci --no-fund --no-audit
 
+      - name: Тесты
+        working-directory: frontend
+        run: npm test
+
       - name: Сборка
         working-directory: frontend
-        run: npm run generate
+        run: npm run build

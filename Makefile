@@ -1,112 +1,81 @@
-.PHONY: all build build-frontend frontend-deps dev-backend dev-frontend \
-        desktop desktop-dev desktop-run desktop-install desktop-uninstall \
-        desktop-nopasswd desktop-nopasswd-off clean
+.PHONY: all build build-frontend frontend-deps test dev-service dev-ui dev-frontend \
+        dist dist-linux dist-windows clean
 
-# Установка приложения — в пользовательский префикс: root не нужен, права
-# приложение и так берёт через polkit в момент запуска VPN.
-DESKTOP_PREFIX ?= $(HOME)/.local
-DESKTOP_LIBDIR := $(DESKTOP_PREFIX)/lib/awg-client
-DESKTOP_APPDIR := $(DESKTOP_PREFIX)/share/applications
-DESKTOP_ICONS  := $(DESKTOP_PREFIX)/share/icons/hicolor
-DESKTOP_BUILD  := desktop/src-tauri/target/release
+# Единственное место, где объявлена версия. Её же сверяет с тегом workflow
+# релиза; службе она подставляется на сборке, интерфейс спрашивает её у службы.
+VERSION := $(shell cat VERSION)
+MODULE  := github.com/user/amnezia-web-client
+LDFLAGS := -s -w -X $(MODULE)/internal/version.Value=$(VERSION)
+GOBUILD := cd backend && CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)"
 
-# Копия backend'а, на которую ссылается polkit-политика. Лежит под root:root —
-# иначе разрешение «запускать без пароля» означало бы root по первому желанию
-# любого процесса пользователя.
-PRIV_LIBDIR := /usr/local/lib/awg-client
-PRIV_POLICY := /usr/share/polkit-1/actions/org.amnezia.awgclient.policy
+DIST := dist
 
-# Тройка цели Rust — по ней Tauri ищет sidecar-бинарник backend'а
-TARGET_TRIPLE := $(shell rustc -Vv 2>/dev/null | awk '/^host:/{print $$2}')
+# wintun — драйвер TUN для Windows от авторов WireGuard. Библиотека лежит
+# рядом с exe; сумма сверяется, потому что это драйвер ядра.
+WINTUN_VERSION := 0.14.1
+WINTUN_SHA256  := 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+WINTUN_ZIP     := backend/build/wintun-$(WINTUN_VERSION).zip
 
-all: build
+all: build build-frontend
 
-# Служба. Интерфейс в неё больше не вшивается: он лежит в бандле оболочки,
-# а служба отдаёт только API — по unix-сокету.
+# Обе программы под текущую систему — в backend/build.
 build:
-	cd backend && make build
+	$(GOBUILD) -o build/awg-service ./cmd/awg-service
+	$(GOBUILD) -o build/awg-ui ./cmd/awg-ui
+	@echo "Собрано: backend/build (версия $(VERSION))"
 
-# Зависимости интерфейса. Собирает его сам Tauri (beforeBuild/beforeDevCommand),
-# но зависимости к этому моменту уже должны стоять.
 frontend-deps:
-	cd frontend && npm install --no-fund --no-audit
+	cd frontend && npm ci --no-fund --no-audit
 
-# Отдельная сборка интерфейса — там, где оболочку не собирают: проверить, что
-# UI вообще строится.
 build-frontend: frontend-deps
-	cd frontend && npm run generate
+	cd frontend && npm run build
 
-# Development mode
-dev-backend:
-	cd backend && make run
+test:
+	cd backend && go vet ./... && GOOS=windows go vet ./... && go test ./...
+	cd frontend && npm test
 
+# ─── Разработка ─────────────────────────────────────────────────────────────
+# Служба нужна с правами root: она создаёт TUN и правит маршруты. Состояние
+# разработки держим отдельно от установленной службы.
+dev-service: build
+	sudo backend/build/awg-service -config $(CURDIR)/backend/build/dev/config.json
+
+# Интерфейс со сборкой: как его увидит пользователь.
+dev-ui: build build-frontend
+	backend/build/awg-ui -www frontend/dist
+
+# Интерфейс с горячей перезагрузкой: /api Vite пересылает службе сам.
 dev-frontend:
 	cd frontend && npm run dev
 
-# ─── Десктопное приложение (Tauri) ──────────────────────────────────────────
+# ─── Архивы для выпуска ─────────────────────────────────────────────────────
+dist: dist-linux dist-windows
 
-# Сборка пакетов (.deb и AppImage) в desktop/src-tauri/target/release/bundle
-#
-# APPIMAGE_EXTRACT_AND_RUN — linuxdeploy сам является AppImage и без fuse2
-# не монтируется; NO_STRIP — его strip не понимает секцию .relr.dyn в
-# современных системных библиотеках.
-desktop: build frontend-deps
-	mkdir -p desktop/src-tauri/binaries
-	cp backend/build/awg-client desktop/src-tauri/binaries/awg-client-$(TARGET_TRIPLE)
-	cd desktop && npm install --no-fund --no-audit && \
-		APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 npm run build
+dist-linux: build-frontend
+	rm -rf $(DIST)/linux && mkdir -p $(DIST)/linux/awg-client
+	cd backend && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../$(DIST)/linux/awg-client/awg-service ./cmd/awg-service
+	cd backend && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../$(DIST)/linux/awg-client/awg-ui ./cmd/awg-ui
+	cp -r frontend/dist $(DIST)/linux/awg-client/www
+	cp packaging/linux/* $(DIST)/linux/awg-client/
+	tar -C $(DIST)/linux -czf $(DIST)/awg-client_$(VERSION)_linux_amd64.tar.gz awg-client
+	@echo "Готово: $(DIST)/awg-client_$(VERSION)_linux_amd64.tar.gz"
 
-# Запуск оболочки без упаковки (пересобирает службу, интерфейс поднимает Nuxt
-# в режиме разработки — его адрес прописан в tauri.conf.json)
-desktop-dev: build frontend-deps
-	mkdir -p desktop/src-tauri/binaries
-	cp backend/build/awg-client desktop/src-tauri/binaries/awg-client-$(TARGET_TRIPLE)
-	cd desktop && npm install --no-fund --no-audit && npm run dev
+$(WINTUN_ZIP):
+	mkdir -p $(dir $@)
+	curl -sSfL -o $@.part https://www.wintun.net/builds/wintun-$(WINTUN_VERSION).zip
+	echo "$(WINTUN_SHA256)  $@.part" | sha256sum -c -
+	mv $@.part $@
 
-# Запустить уже собранное приложение
-desktop-run:
-	$(DESKTOP_BUILD)/awg-client-desktop
+dist-windows: build-frontend $(WINTUN_ZIP)
+	rm -rf $(DIST)/windows && mkdir -p "$(DIST)/windows/AWG Client"
+	cd backend && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o "../$(DIST)/windows/AWG Client/awg-service.exe" ./cmd/awg-service
+	cd backend && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o "../$(DIST)/windows/AWG Client/awg-ui.exe" ./cmd/awg-ui
+	unzip -jq $(WINTUN_ZIP) wintun/bin/amd64/wintun.dll -d "$(DIST)/windows/AWG Client"
+	cp -r frontend/dist "$(DIST)/windows/AWG Client/www"
+	cp packaging/windows/* "$(DIST)/windows/AWG Client/"
+	cd $(DIST)/windows && rm -f ../awg-client_$(VERSION)_windows_amd64.zip && python3 -m zipfile -c ../awg-client_$(VERSION)_windows_amd64.zip "AWG Client"
+	@echo "Готово: $(DIST)/awg-client_$(VERSION)_windows_amd64.zip"
 
-# Установка в ~/.local: два бинарника рядом (оболочка ищет backend возле себя),
-# ярлык в меню и иконки. Ничего системного не трогаем.
-desktop-install: desktop
-	install -Dm755 $(DESKTOP_BUILD)/awg-client-desktop $(DESKTOP_LIBDIR)/awg-client-desktop
-	install -Dm755 $(DESKTOP_BUILD)/awg-client         $(DESKTOP_LIBDIR)/awg-client
-	install -d $(DESKTOP_PREFIX)/bin
-	ln -sf $(DESKTOP_LIBDIR)/awg-client-desktop $(DESKTOP_PREFIX)/bin/awg-client-desktop
-	install -Dm644 desktop/src-tauri/icons/32x32.png      $(DESKTOP_ICONS)/32x32/apps/awg-client.png
-	install -Dm644 desktop/src-tauri/icons/64x64.png      $(DESKTOP_ICONS)/64x64/apps/awg-client.png
-	install -Dm644 desktop/src-tauri/icons/128x128.png    $(DESKTOP_ICONS)/128x128/apps/awg-client.png
-	install -Dm644 desktop/src-tauri/icons/128x128@2x.png $(DESKTOP_ICONS)/256x256/apps/awg-client.png
-	install -d $(DESKTOP_APPDIR)
-	sed 's|@BIN@|$(DESKTOP_LIBDIR)/awg-client-desktop|' desktop/awg-client.desktop.in \
-		> $(DESKTOP_APPDIR)/awg-client.desktop
-	-update-desktop-database $(DESKTOP_APPDIR) 2>/dev/null
-	-gtk-update-icon-cache -qtf $(DESKTOP_ICONS) 2>/dev/null
-	@echo "Установлено в $(DESKTOP_LIBDIR). Ищи «AWG Client» в меню."
-
-# Разовая выдача прав: после неё backend стартует без запроса пароля —
-# из активной локальной сессии, по политике polkit.
-desktop-nopasswd: build
-	sudo install -Dm755 -o root -g root backend/build/awg-client $(PRIV_LIBDIR)/awg-client
-	sudo install -Dm644 -o root -g root desktop/org.amnezia.awgclient.policy $(PRIV_POLICY)
-	@echo "Готово: пароль больше не спрашивается. Отменить — make desktop-nopasswd-off"
-
-desktop-nopasswd-off:
-	sudo rm -f $(PRIV_POLICY)
-	sudo rm -rf $(PRIV_LIBDIR)
-	@echo "Разрешение отозвано: backend снова спрашивает пароль при запуске"
-
-desktop-uninstall:
-	rm -rf $(DESKTOP_LIBDIR)
-	rm -f $(DESKTOP_PREFIX)/bin/awg-client-desktop
-	rm -f $(DESKTOP_APPDIR)/awg-client.desktop
-	rm -f $(DESKTOP_ICONS)/*/apps/awg-client.png
-	-update-desktop-database $(DESKTOP_APPDIR) 2>/dev/null
-	-gtk-update-icon-cache -qtf $(DESKTOP_ICONS) 2>/dev/null
-
-# Clean build artifacts
 clean:
-	cd backend && make clean
-	rm -rf frontend/.nuxt frontend/.output frontend/node_modules
-	rm -rf desktop/node_modules desktop/src-tauri/target desktop/src-tauri/binaries/awg-client-*
+	rm -rf backend/build $(DIST)
+	rm -rf frontend/dist frontend/node_modules

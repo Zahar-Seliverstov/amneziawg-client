@@ -19,7 +19,7 @@ func TestParsePath(t *testing.T) {
 		},
 		{
 			name:   "по линку, без шлюза",
-			output: "192.168.0.5 dev wlan0 src 192.168.0.124 uid 1000 \n    cache \n",
+			output: "192.168.0.5 dev wlan0 src 192.168.1.10 uid 1000 \n    cache \n",
 			want:   Path{Device: "wlan0"},
 		},
 		{
@@ -72,7 +72,7 @@ func TestParsePathRejectsAnswerWithoutDevice(t *testing.T) {
 func TestParseDefaultPath(t *testing.T) {
 	// Несколько маршрутов по умолчанию — обычное дело, когда включены и
 	// кабель, и Wi-Fi. Ядро печатает их в порядке предпочтения.
-	output := "default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.0.124 metric 600 \n" +
+	output := "default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.1.10 metric 600 \n" +
 		"default via 10.0.0.1 dev enp4s0 proto dhcp metric 100 \n"
 
 	got, err := parseDefaultPath(output)

@@ -17,24 +17,25 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_BIN="$SCRIPT_DIR/backend/build/awg-client"
+BACKEND_BIN="$SCRIPT_DIR/backend/build/awg-service"
 REPORT="$SCRIPT_DIR/diag-report.txt"
 BACKEND_LOG="$(mktemp /tmp/awg-diag-backend.XXXXXX.log)"
-# Свой сокет, а не рабочий: диагностика поднимает отдельную службу и не должна
-# ни занять сокет работающего клиента, ни постучаться в него по ошибке.
-DIAG_SOCKET="${XDG_RUNTIME_DIR:-$HOME/.config/awg-client}/awg-diag.sock"
+# Свой порт, а не рабочий: диагностика поднимает отдельную службу и не должна
+# ни занять порт работающей, ни постучаться в неё по ошибке.
+DIAG_ADDR="127.0.0.1:17071"
 
-# Обёртка над curl. Ни токена, ни заголовков доступа: служба слушает unix-сокет
-# с правами 0600, и дотянуться до неё может только владелец. Имя хоста в адресе
-# формальное — соединение идёт по сокету из --unix-socket.
 api() {
     local method="$1" path="$2"; shift 2
     curl -s -m 20 -X "$method" \
-        --unix-socket "$DIAG_SOCKET" \
         -H "Content-Type: application/json" \
-        "$@" "http://localhost$path"
+        "$@" "http://$DIAG_ADDR$path"
 }
-CONFIG_FILE="$HOME/.config/awg-client/config.json"
+# Состояние рабочей службы. Диагностика работает на копии: две службы на
+# одном файле затирали бы правки друг друга.
+CONFIG_FILE="/var/lib/awg-client/config.json"
+DIAG_DIR="$(mktemp -d /tmp/awg-diag.XXXXXX)"
+DIAG_CONFIG="$DIAG_DIR/config.json"
+SERVICE_WAS_RUNNING=0
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 say()  { echo -e "${BLUE}[..]${NC} $1"; }
@@ -65,10 +66,15 @@ restore() {
     sleep 2
 
     if [ -n "$DIAG_BACKEND_PID" ]; then
-        sudo -n pkill -TERM -f "^$BACKEND_BIN -socket $DIAG_SOCKET" 2>/dev/null
+        sudo -n pkill -TERM -f "^$BACKEND_BIN -listen $DIAG_ADDR" 2>/dev/null
         sleep 1
-        sudo -n pkill -KILL -f "^$BACKEND_BIN -socket $DIAG_SOCKET" 2>/dev/null
-        rm -f "$DIAG_SOCKET"
+        sudo -n pkill -KILL -f "^$BACKEND_BIN -listen $DIAG_ADDR" 2>/dev/null
+    fi
+    sudo -n rm -rf "$DIAG_DIR"
+
+    if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+        say "Запускаю awg-service обратно..."
+        sudo -n systemctl start awg-service 2>/dev/null
     fi
 
     # подчищаем свои следы на случай, если туннель не убрался сам
@@ -108,10 +114,12 @@ warn "Скрипт вернёт его сам, даже если что-то п�
 echo ""
 
 [ -x "$BACKEND_BIN" ] || { err "Нет собранной службы. Сначала: make build"; exit 1; }
-[ -f "$CONFIG_FILE" ] || { err "Нет конфигов. Добавь конфиг в интерфейсе."; exit 1; }
-
 say "Нужен пароль sudo"
 sudo -v || { err "Без sudo не получится"; exit 1; }
+
+# Каталог службы закрыт от всех, кроме root, — проверяем от его имени.
+sudo -n test -f "$CONFIG_FILE" || { err "Нет конфигов. Добавь конфиг в интерфейсе."; exit 1; }
+sudo -n cp "$CONFIG_FILE" "$DIAG_CONFIG"
 ( while true; do sleep 50; kill -0 "$$" 2>/dev/null || exit; sudo -n true 2>/dev/null || exit; done ) &
 
 : > "$REPORT"
@@ -133,6 +141,13 @@ if systemctl is-active --quiet AmneziaVPN; then
     sleep 3
     ok "AmneziaVPN остановлен"
 fi
+# Рабочая служба держит awg0, пока подключена, — на время опыта гасим и её.
+if systemctl is-active --quiet awg-service; then
+    SERVICE_WAS_RUNNING=1
+    say "Останавливаю awg-service..."
+    sudo -n systemctl stop awg-service
+    sleep 1
+fi
 sudo -n ip link delete amn0 2>/dev/null
 sudo -n ip link delete awg0 2>/dev/null
 
@@ -141,9 +156,8 @@ run ip -brief address show
 run ip route show
 
 # ── свой экземпляр backend, лог в файл ──────────────────────────────────────
-say "Запускаю службу для опыта на сокете $DIAG_SOCKET..."
-rm -f "$DIAG_SOCKET"
-sudo -n env HOME="$HOME" "$BACKEND_BIN" -socket "$DIAG_SOCKET" -config "$CONFIG_FILE" \
+say "Запускаю службу для опыта на $DIAG_ADDR..."
+sudo -n "$BACKEND_BIN" -listen "$DIAG_ADDR" -config "$DIAG_CONFIG" \
     > "$BACKEND_LOG" 2>&1 &
 DIAG_BACKEND_PID=$!
 

@@ -15,6 +15,7 @@ package vpn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -32,6 +33,16 @@ import (
 // sweepInterval — как часто снимаем маршруты с истёкшим сроком.
 const sweepInterval = time.Minute
 
+// minNameRouteLifetime — нижняя граница срока маршрута по имени.
+//
+// TTL записи говорит, когда пора переспросить DNS, а не когда адрес перестал
+// использоваться. Браузер держит открытые соединения и кеш имён дольше TTL:
+// у ВК записи живут 3–15 минут, и после уборки уже установленное прямое
+// соединение начинало уходить в туннель с чужим адресом источника и
+// повисало — песни обрывались, страница грузилась по минуте. Лишний
+// маршрут на один адрес почти ничего не стоит, оборванное соединение — дорого.
+const minNameRouteLifetime = 6 * time.Hour
+
 // startNameRouting поднимает посредника DNS, если среди правил есть хоть одно
 // по имени. Возвращает адрес, который следует прописать системе как сервер
 // имён, и признак того, что посредник действительно запущен.
@@ -44,7 +55,7 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 		return netip.Addr{}, false
 	}
 
-	matcher := routing.NewMatcher(rc.Rules)
+	matcher := routing.NewMatcher(rc.Rules, m.sites())
 	if matcher.Empty() {
 		return netip.Addr{}, false
 	}
@@ -68,7 +79,7 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 	if rc.Mode == config.RoutingModeDirectList {
 		installer = newBypassInstaller(m)
 	} else {
-		installer = tunnelInstaller{ip: m.ip, ifname: m.ifname()}
+		installer = newTunnelInstaller(m.ip, m.tunnelRoute)
 	}
 
 	set := routing.NewDynamicSet(installer)
@@ -84,7 +95,7 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 		}
 		// Считаем взятые под учёт адреса, а не поставленные маршруты: часть
 		// из них уже идёт куда надо и своего маршрута не требует.
-		if n := set.Observe(answer.Name, answer.Addrs, answer.TTL, time.Now()); n > 0 {
+		if n := set.Observe(answer.Name, answer.Addrs, max(answer.TTL, minNameRouteLifetime), time.Now()); n > 0 {
 			log.Printf("Правило по имени %s: адресов взято под учёт %d", answer.Name, n)
 		}
 	})
@@ -148,17 +159,51 @@ func sweepLoop(set *routing.DynamicSet, stop <-chan struct{}) {
 }
 
 // tunnelInstaller заворачивает адрес в туннель.
+//
+// Как и bypassInstaller, помнит, какие маршруты поставил сам. Адрес домена
+// часто уже заведён в туннель правилом, разрешённым при подключении; раньше
+// такой ответ DNS считался неудачей, не брался под учёт и на каждом
+// следующем ответе снова запускал ip — с записью «File exists» в журнал.
 type tunnelInstaller struct {
-	ip     iproute.Tool
-	ifname string
+	ip iproute.Tool
+	// route собирает маршрут в туннель — с нашей таблицей, если она есть.
+	route func(prefix string) []string
+
+	mu    sync.Mutex
+	owned map[netip.Prefix]bool
 }
 
-func (t tunnelInstaller) Add(p netip.Prefix) error {
-	return t.ip.AddRoute(p.String(), "dev", t.ifname)
+func newTunnelInstaller(ip iproute.Tool, route func(prefix string) []string) *tunnelInstaller {
+	return &tunnelInstaller{ip: ip, route: route, owned: make(map[netip.Prefix]bool)}
 }
 
-func (t tunnelInstaller) Remove(p netip.Prefix) error {
-	return t.ip.DelRoute(p.String(), "dev", t.ifname)
+func (t *tunnelInstaller) Add(p netip.Prefix) error {
+	own := true
+	if err := t.ip.AddRoute(t.route(p.String())...); err != nil {
+		// Маршрут уже стоит: его поставило правило по адресу или домену.
+		// Снимет его тот, кто ставил.
+		if !errors.Is(err, iproute.ErrExists) {
+			return err
+		}
+		own = false
+	}
+
+	t.mu.Lock()
+	t.owned[p] = own
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *tunnelInstaller) Remove(p netip.Prefix) error {
+	t.mu.Lock()
+	own := t.owned[p]
+	delete(t.owned, p)
+	t.mu.Unlock()
+
+	if !own {
+		return nil
+	}
+	return t.ip.DelRoute(t.route(p.String())...)
 }
 
 // bypassInstaller выводит адрес мимо туннеля — тем путём, каким система шла
@@ -193,7 +238,13 @@ func (b *bypassInstaller) Add(p netip.Prefix) error {
 
 	if needed {
 		if err := b.m.ip.AddRoute(args...); err != nil {
-			return err
+			// Такой маршрут уже стоит: адрес вывело правило по адресу или
+			// домену, разрешённое заранее. Своим его не считаем — снимет его
+			// тот, кто ставил.
+			if !errors.Is(err, iproute.ErrExists) {
+				return err
+			}
+			args = nil
 		}
 	}
 

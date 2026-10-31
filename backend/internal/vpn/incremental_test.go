@@ -55,13 +55,13 @@ func TestFullRebuildOnlyWhenLayoutChanges(t *testing.T) {
 			old:  routingWith(vpnList, rule(config.RuleTypeIP, "1.1.1.1")),
 			now: routingWith(vpnList,
 				rule(config.RuleTypeIP, "1.1.1.1"),
-				rule(config.RuleTypeDomain, "dtel.ru")),
+				rule(config.RuleTypeDomain, "example.org")),
 		},
 		{
 			name: "исчезло последнее правило по имени — посредник должен остановиться",
 			old: routingWith(vpnList,
 				rule(config.RuleTypeIP, "1.1.1.1"),
-				rule(config.RuleTypeDomain, "dtel.ru")),
+				rule(config.RuleTypeDomain, "example.org")),
 			now: routingWith(vpnList, rule(config.RuleTypeIP, "1.1.1.1")),
 		},
 		{
@@ -74,16 +74,16 @@ func TestFullRebuildOnlyWhenLayoutChanges(t *testing.T) {
 		},
 		{
 			name: "добавили имя к уже имеющимся — правка",
-			old:  routingWith(vpnList, rule(config.RuleTypeDomain, "dtel.ru")),
+			old:  routingWith(vpnList, rule(config.RuleTypeDomain, "example.org")),
 			now: routingWith(vpnList,
-				rule(config.RuleTypeDomain, "dtel.ru"),
+				rule(config.RuleTypeDomain, "example.org"),
 				rule(config.RuleTypeDomain, "example.com")),
 			incremental: true,
 		},
 		{
 			name: "удалили одно имя из нескольких — правка",
 			old: routingWith(vpnList,
-				rule(config.RuleTypeDomain, "dtel.ru"),
+				rule(config.RuleTypeDomain, "example.org"),
 				rule(config.RuleTypeZone, ".ru")),
 			now:         routingWith(vpnList, rule(config.RuleTypeZone, ".ru")),
 			incremental: true,
@@ -103,7 +103,7 @@ func TestFullRebuildOnlyWhenLayoutChanges(t *testing.T) {
 func TestDisablingRuleCountsAsRemoval(t *testing.T) {
 	old := routingWith(config.RoutingModeVPNList,
 		rule(config.RuleTypeIP, "1.1.1.1"),
-		rule(config.RuleTypeDomain, "dtel.ru"))
+		rule(config.RuleTypeDomain, "example.org"))
 
 	off := old.Clone()
 	off.Rules[0].Enabled = false
@@ -123,11 +123,11 @@ func TestDisablingRuleCountsAsRemoval(t *testing.T) {
 	}
 }
 
-// Регистр не в счёт: «DTEL.RU» и «dtel.ru» — одно правило, и пересобирать
+// Регистр не в счёт: «EXAMPLE.ORG» и «example.org» — одно правило, и пересобирать
 // из-за такой правки нечего.
 func TestCaseOnlyChangeIsNotAChange(t *testing.T) {
-	old := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "dtel.ru"))
-	now := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "DTEL.RU"))
+	old := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "example.org"))
+	now := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "EXAMPLE.ORG"))
 
 	delta, ok := planRoutingDelta(old, now)
 	if !ok {
@@ -146,16 +146,16 @@ func TestDeltaKeepsLearnedRoutesOfSurvivingNames(t *testing.T) {
 	m.notify = make(chan ConnectionStatus, 8)
 
 	// Посредник уже поработал: под каждое имя выучен свой адрес.
-	installer := tunnelInstaller{ip: ip, ifname: "awg0"}
+	installer := newTunnelInstaller(ip, m.tunnelRoute)
 	set := routing.NewDynamicSet(installer)
-	set.Observe("dtel.ru", []netip.Addr{netip.MustParseAddr("1.2.3.4")}, time.Hour, time.Now())
+	set.Observe("example.org", []netip.Addr{netip.MustParseAddr("1.2.3.4")}, time.Hour, time.Now())
 	set.Observe("example.com", []netip.Addr{netip.MustParseAddr("5.6.7.8")}, time.Hour, time.Now())
 	m.dynamicRoutes = set
 
 	old := routingWith(config.RoutingModeVPNList,
-		rule(config.RuleTypeDomain, "dtel.ru"),
+		rule(config.RuleTypeDomain, "example.org"),
 		rule(config.RuleTypeDomain, "example.com"))
-	now := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "dtel.ru"))
+	now := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeDomain, "example.org"))
 
 	delta, ok := planRoutingDelta(old, now)
 	if !ok {
@@ -181,7 +181,7 @@ func TestDeltaKeepsLearnedRoutesOfSurvivingNames(t *testing.T) {
 	if m.nameMatcher.Load().Match("example.com") {
 		t.Error("посредник всё ещё считает удалённое имя своим")
 	}
-	if !m.nameMatcher.Load().Match("dtel.ru") {
+	if !m.nameMatcher.Load().Match("example.org") {
 		t.Error("посредник перестал узнавать оставшееся имя")
 	}
 }

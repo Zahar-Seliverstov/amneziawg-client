@@ -24,7 +24,7 @@ func TestLiveResolveMatchesRules(t *testing.T) {
 	matcher := routing.NewMatcher([]config.RoutingRule{
 		{Type: config.RuleTypeZone, Value: ".ru", Enabled: true},
 		{Type: config.RuleTypeDomain, Value: "example.com", Enabled: true},
-	})
+	}, nil)
 
 	type observation struct {
 		name    string

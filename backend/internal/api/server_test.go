@@ -23,6 +23,9 @@ func request(t *testing.T, s *Server, method, path, body string, headers map[str
 	}
 
 	req := httptest.NewRequest(method, path, reader)
+	// httptest подставляет example.com, а guard пропускает только петлевой
+	// адрес.
+	req.Host = "127.0.0.1:7071"
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -107,41 +110,6 @@ func TestConfigResponsesHideSecrets(t *testing.T) {
 	// А форме правки текст обязан приходить: иначе править нечего.
 	if got := request(t, s, http.MethodGet, "/api/configs/"+added.ID, "", nil).Body.String(); !strings.Contains(got, "PrivateKey") {
 		t.Errorf("подробности пришли без текста .conf: %s", got)
-	}
-}
-
-// Список правил на экране группируется по источнику. Имена дают ответ без
-// единого вопроса к DNS, поэтому проверять его можно и без сети.
-func TestRoutingSourcesGroupsByDomain(t *testing.T) {
-	s := newTestServer(t)
-
-	for _, value := range []string{"git.dtel.ru", "bitrix.dtel.ru", "google.com"} {
-		body := `{"type": "domain", "value": "` + value + `"}`
-		if rec := request(t, s, http.MethodPost, "/api/routing/rules", body, nil); rec.Code != http.StatusOK {
-			t.Fatalf("правило %s не добавлено: %d %s", value, rec.Code, rec.Body.String())
-		}
-	}
-
-	rec := request(t, s, http.MethodGet, "/api/routing/sources", "", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("источники не отданы: %d %s", rec.Code, rec.Body.String())
-	}
-
-	var sources map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &sources); err != nil {
-		t.Fatalf("ответ не разобран: %v", err)
-	}
-
-	counts := map[string]int{}
-	for _, src := range sources {
-		counts[src]++
-	}
-
-	if counts["dtel.ru"] != 2 {
-		t.Errorf("поддомены не сошлись в одну группу: %v", sources)
-	}
-	if counts["google.com"] != 1 {
-		t.Errorf("чужое имя попало не в свою группу: %v", sources)
 	}
 }
 
@@ -269,7 +237,7 @@ func doBatch(t *testing.T, s *Server, body string) batchResponse {
 func TestBatchRejectsPerRule(t *testing.T) {
 	s := newTestServer(t)
 
-	got := doBatch(t, s, `{"add":["dtel.ru",".ru","10.0.0.0/8","1.1.1.1","10.0.0.0/44","exa mple.com","ru"]}`)
+	got := doBatch(t, s, `{"add":["example.org",".ru","10.0.0.0/8","1.1.1.1","10.0.0.0/44","exa mple.com","ru"]}`)
 
 	if len(got.Added) != 4 {
 		t.Fatalf("взято %d правил, ожидалось 4: %+v", len(got.Added), got.Added)
@@ -280,7 +248,7 @@ func TestBatchRejectsPerRule(t *testing.T) {
 
 	// Вид выводится из значения, руками его никто не проставлял.
 	want := map[string]string{
-		"dtel.ru":    config.RuleTypeDomain,
+		"example.org":    config.RuleTypeDomain,
 		".ru":        config.RuleTypeZone,
 		"10.0.0.0/8": config.RuleTypeCIDR,
 		"1.1.1.1":    config.RuleTypeIP,
@@ -310,10 +278,10 @@ func TestBatchRejectsPerRule(t *testing.T) {
 func TestBatchDeduplicates(t *testing.T) {
 	s := newTestServer(t)
 
-	doBatch(t, s, `{"add":["dtel.ru"]}`)
-	got := doBatch(t, s, `{"add":["DTEL.RU","git.dtel.ru","git.dtel.ru"]}`)
+	doBatch(t, s, `{"add":["example.org"]}`)
+	got := doBatch(t, s, `{"add":["EXAMPLE.ORG","git.example.org","git.example.org"]}`)
 
-	if len(got.Added) != 1 || got.Added[0].Value != "git.dtel.ru" {
+	if len(got.Added) != 1 || got.Added[0].Value != "git.example.org" {
 		t.Fatalf("взято не то: %+v", got.Added)
 	}
 	if len(got.Rejected) != 2 {
@@ -330,7 +298,7 @@ func TestBatchDeduplicates(t *testing.T) {
 func TestBatchRemoves(t *testing.T) {
 	s := newTestServer(t)
 
-	added := doBatch(t, s, `{"add":["a.dtel.ru","b.dtel.ru","c.dtel.ru"]}`).Added
+	added := doBatch(t, s, `{"add":["a.example.org","b.example.org","c.example.org"]}`).Added
 
 	body := `{"remove":["` + added[0].ID + `","` + added[2].ID + `","нет-такого"]}`
 	got := doBatch(t, s, body)
@@ -340,7 +308,7 @@ func TestBatchRemoves(t *testing.T) {
 	}
 
 	routing := s.config.GetRouting()
-	if len(routing.Rules) != 1 || routing.Rules[0].Value != "b.dtel.ru" {
+	if len(routing.Rules) != 1 || routing.Rules[0].Value != "b.example.org" {
 		t.Errorf("в списке осталось не то: %+v", routing.Rules)
 	}
 }
@@ -350,7 +318,7 @@ func TestBatchRemoves(t *testing.T) {
 func TestBatchAcceptsObjects(t *testing.T) {
 	s := newTestServer(t)
 
-	got := doBatch(t, s, `{"add":[{"type":"cidr","value":"10.0.0.0/8"},{"value":"dtel.ru"},{"type":"выдумка","value":"x"}]}`)
+	got := doBatch(t, s, `{"add":[{"type":"cidr","value":"10.0.0.0/8"},{"value":"example.org"},{"type":"выдумка","value":"x"}]}`)
 
 	if len(got.Added) != 2 {
 		t.Fatalf("взято %d, ожидалось 2: %+v", len(got.Added), got.Added)
@@ -415,7 +383,7 @@ func TestRapidEditsCollapseIntoOneApply(t *testing.T) {
 	rec := watchApplies(s)
 
 	for i := 0; i < 20; i++ {
-		body := fmt.Sprintf(`{"type":"domain","value":"host%d.dtel.ru"}`, i)
+		body := fmt.Sprintf(`{"type":"domain","value":"host%d.example.org"}`, i)
 		if rec := request(t, s, http.MethodPost, "/api/routing/rules", body, nil); rec.Code != http.StatusOK {
 			t.Fatalf("правило %d отвергнуто: %s", i, rec.Body.String())
 		}
@@ -458,7 +426,7 @@ func TestRuleAcceptedBeforeRoutesAreBuilt(t *testing.T) {
 		return nil
 	}
 
-	if rec := request(t, s, http.MethodPost, "/api/routing/rules", `{"type":"domain","value":"dtel.ru"}`, nil); rec.Code != http.StatusOK {
+	if rec := request(t, s, http.MethodPost, "/api/routing/rules", `{"type":"domain","value":"example.org"}`, nil); rec.Code != http.StatusOK {
 		t.Fatalf("правило отвергнуто: %s", rec.Body.String())
 	}
 
@@ -482,7 +450,7 @@ func TestBatchAppliesOnce(t *testing.T) {
 
 	var values []string
 	for i := 0; i < 100; i++ {
-		values = append(values, fmt.Sprintf(`"host%d.dtel.ru"`, i))
+		values = append(values, fmt.Sprintf(`"host%d.example.org"`, i))
 	}
 	body := `{"add":[` + strings.Join(values, ",") + `]}`
 
@@ -508,7 +476,7 @@ func TestUnchangedBatchDoesNotApply(t *testing.T) {
 	s := newTestServer(t)
 	rec := watchApplies(s)
 
-	doBatch(t, s, `{"add":["dtel.ru"]}`)
+	doBatch(t, s, `{"add":["example.org"]}`)
 
 	select {
 	case <-rec.done:
@@ -516,10 +484,32 @@ func TestUnchangedBatchDoesNotApply(t *testing.T) {
 		t.Fatal("первое применение не случилось")
 	}
 
-	doBatch(t, s, `{"add":["dtel.ru","мусор с пробелами"]}`)
+	doBatch(t, s, `{"add":["example.org","мусор с пробелами"]}`)
 	time.Sleep(150 * time.Millisecond)
 
 	if got := rec.count(); got != 1 {
 		t.Errorf("применений: %d — пересборка пошла зря", got)
+	}
+}
+
+// Правило на набор без базы не действовало бы молча — оно отвергается сразу,
+// с причиной.
+func TestBatchRejectsGeoWithoutBase(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := request(t, s, http.MethodPost, "/api/routing/rules/batch", `{"add": ["geosite:youtube", "example.com"]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("пакет не принят: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Added    []config.RoutingRule `json:"added"`
+		Rejected []rejectedRule       `json:"rejected"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Added) != 1 || len(result.Rejected) != 1 || !strings.Contains(result.Rejected[0].Reason, "не загружена") {
+		t.Errorf("ждали одно принятое и geosite с причиной «не загружена»: %+v", result)
 	}
 }

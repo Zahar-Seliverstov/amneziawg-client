@@ -13,8 +13,10 @@ package vpn
 
 import (
 	"log"
+	"strings"
 
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/iproute"
 )
 
 // ruleRoute — один маршрут, поставленный по правилам.
@@ -39,27 +41,57 @@ func (m *Manager) installRuleRoutes(mode config.RoutingMode, addrs ruleAddresses
 	if mode == config.RoutingModeVPNList {
 		// В туннель уходит только перечисленное. Маршруты однотипны —
 		// «префикс dev awg0», — поэтому ставятся одним запуском ip.
-		ifname := m.ifname()
-
 		routes := make([][]string, 0, len(addrs.order))
 		for _, prefix := range addrs.order {
-			routes = append(routes, []string{prefix, "dev", ifname})
+			routes = append(routes, m.tunnelRoute(prefix))
 		}
-
-		for i, err := range m.ip.AddRoutes(routes) {
-			prefix := addrs.order[i]
-			if err != nil {
-				log.Printf("Warning: failed to add route %s: %v", prefix, err)
-				continue
-			}
-			m.rememberRuleRoute(prefix, routes[i], addrs.sources[prefix])
-		}
+		m.addRuleRoutes(addrs.order, routes, addrs.sources)
 		return
 	}
 
-	// Режим исключений. Пакетом их не поставить: путь у каждого свой и
-	// спрашивается у ядра отдельно (см. bypass.go).
+	// Режим исключений. Путь у каждого адреса свой и спрашивается у ядра
+	// отдельно (см. bypass.go) — кроме наборов geoip: опрашивать ядро о
+	// каждой из двадцати тысяч подсетей geoip:ru значило бы минуты ожидания.
+	// Их ведём путём по умолчанию, одной пачкой. Чужие маршруты точнее
+	// (сеть docker, второй VPN) этим не перебиваются: подсети наборов крупнее.
+	var (
+		bulkPrefixes []string
+		bulkRoutes   [][]string
+		defaults     = map[bool]*iproute.Path{}
+	)
+
+	// С маршрутизацией по политикам у каждого исключения один и тот же
+	// маршрут — throw, «дальше решает система». Спрашивать ядро не о чем, и
+	// всё ставится одной пачкой.
+	if m.policy != nil {
+		for _, prefix := range addrs.order {
+			bulkPrefixes = append(bulkPrefixes, prefix)
+			bulkRoutes = append(bulkRoutes, m.throwRoute(prefix))
+		}
+		m.addRuleRoutes(bulkPrefixes, bulkRoutes, addrs.sources)
+		return
+	}
+
 	for _, prefix := range addrs.order {
+		if addrs.bulk[prefix] {
+			v6 := strings.Contains(prefix, ":")
+			def, known := defaults[v6]
+			if !known {
+				path, err := m.ip.DefaultPathFor(prefix)
+				if err != nil {
+					log.Printf("Наборы geoip не выведены мимо туннеля (%s): %v", prefix, err)
+				} else {
+					def = &path
+				}
+				defaults[v6] = def
+			}
+			if def != nil {
+				bulkPrefixes = append(bulkPrefixes, prefix)
+				bulkRoutes = append(bulkRoutes, def.RouteArgs(prefix))
+			}
+			continue
+		}
+
 		args, needed, err := m.bypassRoute(prefix)
 		if err != nil {
 			log.Printf("Исключение %s не выведено мимо туннеля: %v", prefix, err)
@@ -77,6 +109,33 @@ func (m *Manager) installRuleRoutes(mode config.RoutingMode, addrs ruleAddresses
 		}
 
 		m.rememberRuleRoute(prefix, args, addrs.sources[prefix])
+	}
+
+	m.addRuleRoutes(bulkPrefixes, bulkRoutes, addrs.sources)
+}
+
+// addRuleRoutes ставит маршруты пачкой и запоминает легшие. Отказы
+// считаются, а в журнал идут только первые: у набора geoip их бывают
+// сотни, и все они об одном. Вызывать под routeMu.
+func (m *Manager) addRuleRoutes(prefixes []string, routes [][]string, sources map[string]map[string]bool) {
+	if len(routes) == 0 {
+		return
+	}
+
+	failed := 0
+	for i, err := range m.ip.AddRoutes(routes) {
+		if err != nil {
+			if failed < 5 {
+				log.Printf("Warning: failed to add route %s: %v", prefixes[i], err)
+			}
+			failed++
+			continue
+		}
+		m.rememberRuleRoute(prefixes[i], routes[i], sources[prefixes[i]])
+	}
+
+	if failed > 5 {
+		log.Printf("Не поставлено маршрутов: %d из %d", failed, len(routes))
 	}
 }
 

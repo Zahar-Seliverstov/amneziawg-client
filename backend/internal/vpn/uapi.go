@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/user/amnezia-web-client/internal/config"
-	"github.com/user/amnezia-web-client/internal/firewall"
 )
 
 // buildUAPIConfig creates a UAPI configuration string
@@ -18,12 +17,11 @@ func (m *Manager) buildUAPIConfig(cfg *config.AmneziaWGConfig) string {
 
 	sb.WriteString(fmt.Sprintf("private_key=%s\n", hexEncodeKey(cfg.Interface.PrivateKey)))
 
-	// Метка на сокете ядра. По ней блокировка отличает наши же зашифрованные
-	// пакеты к серверу VPN от всего остального трафика — см. internal/firewall.
-	// Ставится всегда: на работу туннеля она не влияет, а привязывать её к
-	// настройке значило бы получить блокировку, которая не пропускает сам
-	// туннель, если включить её не в том порядке.
-	sb.WriteString(fmt.Sprintf("fwmark=%d\n", firewall.Mark))
+	// Метка на зашифрованных пакетах самого туннеля: по ней они идут
+	// системной таблицей, а не в наш маршрут по умолчанию (policy.go).
+	if m.policy != nil {
+		sb.WriteString(fmt.Sprintf("fwmark=%d\n", m.policy.TunnelMark()))
+	}
 
 	// AmneziaWG specific parameters
 	if cfg.Interface.Jc > 0 {
