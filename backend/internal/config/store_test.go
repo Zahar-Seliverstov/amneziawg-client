@@ -26,16 +26,12 @@ func newStore(t *testing.T) *AppConfig {
 	return NewAppConfig(filepath.Join(t.TempDir(), "config.json"))
 }
 
-func addSample(t *testing.T, store *AppConfig, name string) AmneziaWGConfig {
+func addSample(t *testing.T, store *AppConfig, name string) Profile {
 	t.Helper()
 
-	cfg, err := ParseAmneziaConfig(name, sampleConfig)
-	if err != nil {
-		t.Fatalf("не разобрать образец конфигурации: %v", err)
-	}
-	store.AddConfig(*cfg)
-
-	return *cfg
+	p := Profile{ID: GenerateID(), Name: name, Protocol: "amneziawg", RawConfig: sampleConfig}
+	store.AddConfig(p)
+	return p
 }
 
 // Сохранение обязано быть неделимым: обрыв на середине не должен оставлять
@@ -104,7 +100,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	configs := loaded.GetAllConfigs()
-	if len(configs) != 1 || configs[0].Interface.PrivateKey != added.Interface.PrivateKey {
+	if len(configs) != 1 || configs[0] != added {
 		t.Fatalf("конфигурация не пережила перезапуск: %+v", configs)
 	}
 }
@@ -178,9 +174,10 @@ func TestLoadDropsUnusableRules(t *testing.T) {
 	}
 }
 
-// Конфиг, добавленный старой версией, не знавшей полей v2, должен подтянуть
-// их из сохранённого текста при следующем запуске.
-func TestLoadReparsesStoredConfigs(t *testing.T) {
+// Записи старых версий несли разобранные поля рядом с текстом. Теперь
+// хранится только текст: лишние поля при чтении отбрасываются, а сама запись —
+// имя, идентификатор и текст — сохраняется.
+func TestLoadDropsLegacyParsedFields(t *testing.T) {
 	store := newStore(t)
 
 	raw := `{"configs": [{"id": "x1", "name": "старая", "raw_config": ` +
@@ -197,11 +194,16 @@ func TestLoadReparsesStoredConfigs(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("конфигурация потерялась")
 	}
-	if cfg.Interface.PrivateKey == "" || len(cfg.Peers) != 1 {
-		t.Errorf("конфигурация не перечитана из raw_config: %+v", cfg)
+	if cfg.Name != "старая" || cfg.RawConfig != sampleConfig || cfg.Protocol != "" {
+		t.Errorf("запись прочитана неверно: %+v", cfg)
 	}
-	if cfg.Name != "старая" {
-		t.Errorf("имя не сохранено: %q", cfg.Name)
+
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(store.Path())
+	if strings.Contains(string(data), `"peers"`) {
+		t.Error("разобранные поля пережили пересохранение")
 	}
 }
 
@@ -212,20 +214,15 @@ func TestGettersReturnIndependentCopies(t *testing.T) {
 	added := addSample(t, store, "исходная")
 
 	got := store.GetConfig(added.ID)
-	got.Interface.Address[0] = "192.0.2.1/32"
-	got.Peers[0].AllowedIPs[0] = "192.0.2.0/24"
+	got.Name = "чужая"
 
-	again := store.GetConfig(added.ID)
-	if again.Interface.Address[0] == "192.0.2.1/32" {
-		t.Error("правка копии изменила адрес в хранилище")
-	}
-	if again.Peers[0].AllowedIPs[0] == "192.0.2.0/24" {
-		t.Error("правка копии изменила AllowedIPs в хранилище")
+	if store.GetConfig(added.ID).Name != "исходная" {
+		t.Error("правка копии изменила запись в хранилище")
 	}
 
 	list := store.GetAllConfigs()
-	list[0].Interface.DNS[0] = "8.8.8.8"
-	if store.GetAllConfigs()[0].Interface.DNS[0] == "8.8.8.8" {
+	list[0].Name = "чужая"
+	if store.GetAllConfigs()[0].Name != "исходная" {
 		t.Error("GetAllConfigs отдал срез, связанный с хранилищем")
 	}
 }

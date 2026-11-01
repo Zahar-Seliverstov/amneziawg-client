@@ -1,24 +1,35 @@
 <template>
-  <div>
-    <div v-for="kind in KINDS" :key="kind" class="base">
-      <div class="base__info">
-        <span class="mono base__name">{{ kind }}.dat</span>
-        <span class="base__what">{{ kind === 'geosite' ? 'сайты по категориям' : 'сети по странам' }}</span>
-        <span class="base__state" :class="geo?.[kind]?.error ? 'bad' : 'muted'">{{ stateText(kind) }}</span>
+  <div class="rows">
+    <div v-for="kind in KINDS" :key="kind" class="line line--base">
+      <div class="line__text">
+        {{ kind }}.dat
+        <span class="line__sub" :class="{ error: geo?.[kind]?.error }">{{ kind === 'geosite' ? 'Сайты по категориям' : 'Сети по странам' }} · {{ stateText(kind) }}</span>
       </div>
-      <div class="row base__actions">
-        <button class="btn btn--sm" :class="{ 'btn--busy': busy[kind] }" :disabled="!geo || busy[kind]" @click="refresh(kind)">
+      <div class="actions">
+        <button class="btn btn--sm" :class="{ 'btn--busy': busy[kind] }" :disabled="!geo || isBusy(kind)" @click="refresh(kind)">
+          <LoaderCircle v-if="isBusy(kind)" class="spin" aria-hidden="true" />
           {{ geo?.[kind]?.present ? 'Обновить' : 'Скачать' }}
         </button>
-        <button class="btn btn--ghost btn--sm" :disabled="!geo || busy[kind]" @click="pickFile(kind)">Из файла…</button>
-        <button class="btn btn--ghost btn--sm" :class="{ 'btn--primary': editingUrl[kind] }" :disabled="!geo" @click="toggleUrl(kind)">Источник</button>
+        <button class="btn btn--ghost btn--icon btn--sm" :disabled="!geo || isBusy(kind)" aria-label="Загрузить из файла" title="Загрузить из файла" @click="pickFile(kind)">
+          <Upload aria-hidden="true" />
+        </button>
+        <button
+          class="btn btn--ghost btn--icon btn--sm"
+          :class="{ 'btn--on': editingUrl[kind] }"
+          :aria-expanded="editingUrl[kind]"
+          :disabled="!geo"
+          aria-label="Адрес, откуда скачивать"
+          title="Адрес, откуда скачивать"
+          @click="toggleUrl(kind)"
+        >
+          <Link aria-hidden="true" />
+        </button>
       </div>
-      <form v-if="editingUrl[kind]" class="row base__url" @submit.prevent="refresh(kind, urls[kind])">
-        <input v-model="urls[kind]" class="input mono" spellcheck="false" :aria-label="`Адрес ${kind}.dat`" />
-        <button class="btn btn--primary btn--sm" type="submit" :disabled="busy[kind]">Скачать</button>
+      <form v-if="editingUrl[kind]" class="row url" @submit.prevent="refresh(kind, urls[kind])">
+        <input v-model="urls[kind]" class="input" spellcheck="false" :aria-label="`Адрес ${kind}.dat`" />
+        <button class="btn btn--primary" type="submit" :disabled="isBusy(kind)">Скачать</button>
       </form>
     </div>
-
     <input ref="fileInput" type="file" accept=".dat,application/octet-stream" hidden @change="onFile" />
   </div>
 </template>
@@ -26,6 +37,7 @@
 <script setup lang="ts">
 // Базы geosite.dat и geoip.dat: состояние, обновление, загрузка из файла и
 // смена адреса, откуда их качать.
+import { Link, LoaderCircle, Upload } from '@lucide/vue'
 import { reactive, ref } from 'vue'
 import type { GeoKind } from '../../api/types'
 import { formatAge } from '../../lib/format'
@@ -45,7 +57,7 @@ let fileKind: GeoKind = 'geosite'
 function stateText(kind: GeoKind) {
   const info = geo.value?.[kind]
   if (!info) return '…'
-  if (busy[kind] || info.updating) return 'скачивается…'
+  if (isBusy(kind)) return 'скачивается…'
   if (info.error && !info.present) return info.error
   if (!info.present) return 'не загружена'
 
@@ -56,6 +68,10 @@ function stateText(kind: GeoKind) {
   ].filter(Boolean)
   if (info.error) parts.push('последнее обновление не удалось')
   return parts.join(' · ')
+}
+
+function isBusy(kind: GeoKind) {
+  return busy[kind] || Boolean(geo.value?.[kind]?.updating)
 }
 
 function toggleUrl(kind: GeoKind) {
@@ -96,43 +112,18 @@ async function onFile(e: Event) {
 </script>
 
 <style scoped>
-.base {
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-}
-
-.base + .base {
-  margin-top: 8px;
-}
-
-.base__info {
-  display: flex;
+/* Строки — те же, что в остальных настройках (.line из SettingsPanel). */
+.line--base {
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 12px;
 }
 
-.base__name {
-  font-weight: 600;
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.base__what {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.base__state {
+.url {
   flex-basis: 100%;
-  font-size: 13px;
-}
-
-.base__actions {
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.base__url {
-  margin-top: 8px;
 }
 </style>

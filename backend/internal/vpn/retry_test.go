@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // newTestManager возвращает менеджер с мгновенными паузами: политику повторов
@@ -16,7 +16,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 
-	m := NewManager()
+	m := NewManager(tunnel.NewRegistry(nil, nil))
 	m.reconnectMin = time.Millisecond
 	m.reconnectMax = 2 * time.Millisecond
 	return m
@@ -246,9 +246,7 @@ func TestConnectionFailsFastWithoutIproute2(t *testing.T) {
 	m := newTestManager(t)
 	m.ipToolErr = errors.New("не найдена команда ip")
 
-	cfg := config.AmneziaWGConfig{Peers: []config.PeerConfig{{AllowedIPs: []string{"0.0.0.0/0"}}}}
-
-	established, err := m.runConnection(context.Background(), &cfg, nil)
+	established, err := m.runConnection(context.Background(), nil, nil, nil)
 
 	if established {
 		t.Error("соединение объявлено состоявшимся")

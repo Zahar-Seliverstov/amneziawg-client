@@ -196,7 +196,7 @@ func TestDeleteMissingEntities(t *testing.T) {
 }
 
 func TestSelectedConfigMustExist(t *testing.T) {
-	s := newTestServer(t, config.AmneziaWGConfig{ID: "c1", Name: "тест"})
+	s := newTestServer(t, testProfile("c1", "тест", ""))
 
 	if rec := request(t, s, http.MethodPut, "/api/selected-config", `{"config_id":"нет-такого"}`, nil); rec.Code != http.StatusNotFound {
 		t.Errorf("выбран несуществующий конфиг, код %d", rec.Code)
@@ -513,5 +513,13 @@ func TestBatchRejectsGeoWithoutBase(t *testing.T) {
 	}
 	if len(result.Added) != 1 || len(result.Rejected) != 1 || !strings.Contains(result.Rejected[0].Reason, "не загружена") {
 		t.Errorf("ждали одно принятое и geosite с причиной «не загружена»: %+v", result)
+	}
+}
+
+func TestProtocolsListed(t *testing.T) {
+	s := newTestServer(t)
+	rec := request(t, s, http.MethodGet, "/api/protocols", "", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"amneziawg"`) {
+		t.Errorf("код %d, тело %s", rec.Code, rec.Body)
 	}
 }

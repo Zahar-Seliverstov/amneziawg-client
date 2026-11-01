@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // configureTraffic перенаправляет трафик в туннель и переключает DNS.
@@ -24,7 +25,7 @@ import (
 // Та же самая функция пересобирает маршрутизацию на живом туннеле, когда
 // правила поменяли из интерфейса: последовательность действий там ровно та
 // же, а два её отдельных списка успели разъехаться.
-func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routingCfg *config.RoutingConfig) error {
+func (m *Manager) configureTraffic(spec *tunnel.Spec, routingCfg *config.RoutingConfig) error {
 	m.routeMu.Lock()
 	defer m.routeMu.Unlock()
 
@@ -34,21 +35,22 @@ func (m *Manager) configureTraffic(cfg *config.AmneziaWGConfig, routingCfg *conf
 	m.stopNameRouting()
 	m.flushRoutes()
 
-	if err := m.configureRouting(cfg, routingCfg); err != nil {
+	if err := m.configureRouting(spec, routingCfg); err != nil {
 		return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
 	}
 
 	// Правила по доменам и зонам обслуживает посредник DNS: адреса для них
 	// становятся известны только из ответов на запросы пользователя.
 	// Не поднялся — работаем как раньше, с прямым DNS из конфига.
-	servers := cfg.Interface.DNS
-	if proxyAddr, ok := m.startNameRouting(cfg, routingCfg); ok {
+	servers := spec.DNS
+	if proxyAddr, ok := m.startNameRouting(spec, routingCfg); ok {
 		servers = []string{proxyAddr.String()}
 	}
 
 	if err := m.dns.Apply(m.ifname(), servers); err != nil {
 		log.Printf("Warning: failed to configure DNS: %v", err)
 	}
+	m.flushDNSCache()
 
 	return nil
 }
@@ -110,12 +112,12 @@ func (m *Manager) flushRoutes() {
 func (m *Manager) ApplyRouting(rc *config.RoutingConfig) error {
 	m.mu.RLock()
 	state := m.status.State
-	cfg := m.activeConfig
+	spec := m.active
 	previous := m.routingConfig
 	proxyUp := m.dnsProxy != nil
 	m.mu.RUnlock()
 
-	if cfg == nil {
+	if spec == nil {
 		return nil
 	}
 
@@ -146,7 +148,7 @@ func (m *Manager) ApplyRouting(rc *config.RoutingConfig) error {
 		log.Printf("Правка маршрутизации на живом туннеле: добавлено %d, удалено %d",
 			len(delta.added), len(delta.removed))
 
-		m.applyRoutingDelta(cfg, rc, delta)
+		m.applyRoutingDelta(spec, rc, delta)
 
 		m.mu.Lock()
 		m.routingConfig = rc
@@ -159,7 +161,7 @@ func (m *Manager) ApplyRouting(rc *config.RoutingConfig) error {
 
 	log.Printf("Re-applying routing rules on live tunnel")
 
-	err := m.configureTraffic(cfg, rc)
+	err := m.configureTraffic(spec, rc)
 
 	m.mu.Lock()
 	if err == nil {
@@ -183,7 +185,7 @@ func (m *Manager) ApplyRouting(rc *config.RoutingConfig) error {
 }
 
 // configureRouting sets up routing based on configuration. Вызывать под routeMu.
-func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) error {
+func (m *Manager) configureRouting(spec *tunnel.Spec, routing *config.RoutingConfig) error {
 	// Правила по доменам резолвим через серверы имён из конфига НАПРЯМУЮ,
 	// минуя системный резолвер.
 	//
@@ -192,25 +194,21 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 	// указывает на него. Запрос уходил бы в мёртвый сокет, и правила по
 	// доменам молча оставались без маршрутов — со стороны это выглядело как
 	// «удалил одно правило, перестали работать все остальные».
-	resolver := resolverFor(parseDNSServers(cfg.Interface.DNS))
+	resolver := resolverFor(parseDNSServers(spec.DNS))
 
 	// Get the peer's allowed IPs
-	var peerAllowedIPs []string
-	for _, peer := range cfg.Peers {
-		peerAllowedIPs = append(peerAllowedIPs, peer.AllowedIPs...)
-	}
 
 	// Правила выбора таблиц ставятся раньше маршрутов: маршрут в нашей
 	// таблице без правила на неё ничего не значит.
 	if m.policy != nil {
-		if err := m.policy.Up(fullTunnel(cfg, routing)); err != nil {
+		if err := m.policy.Up(fullTunnel(spec, routing)); err != nil {
 			return fmt.Errorf("не удалось включить маршрутизацию по политикам: %w", err)
 		}
 	}
 
 	// Программы — не адреса: им не нужны ни резолв, ни маршруты, только
 	// метка (apps_linux.go).
-	defer m.syncApps(cfg, routing)
+	defer m.syncApps(spec, routing)
 
 	if routing == nil || len(routing.Rules) == 0 {
 		// Правил нет — маршрутизируем по AllowedIPs из конфига.
@@ -220,11 +218,11 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 		// туннель встаёт, пинг внутри него идёт, а интернет пропадает.
 		// Полный туннель поднимаем через setupDefaultVPNRoute: он исключает
 		// адрес сервера и вместо 0.0.0.0/0 ставит пару /1-маршрутов.
-		if hasDefaultRoute(peerAllowedIPs) {
-			return m.setupDefaultVPNRoute(cfg)
+		if hasDefaultRoute(spec.AllowedIPs) {
+			return m.setupDefaultVPNRoute(spec)
 		}
 
-		for _, ip := range peerAllowedIPs {
+		for _, ip := range spec.AllowedIPs {
 			if err := m.addRoute(m.tunnelRoute(ip)...); err != nil {
 				log.Printf("Warning: failed to add route %s: %v", ip, err)
 			}
@@ -238,18 +236,18 @@ func (m *Manager) configureRouting(cfg *config.AmneziaWGConfig, routing *config.
 	// geosite:youtube не помогало — до маршрута дело не доходило. Ставим их
 	// до резолва правил, чтобы и он шёл через туннель.
 	if routing.Mode != config.RoutingModeDirectList {
-		m.routeDNSServers(cfg)
+		m.routeDNSServers(spec)
 	}
 
 	// Все имена спрашиваются разом, и только потом ставятся маршруты.
 	// Последовательный резолв был здесь главным источником задержки: сотня
 	// доменов, каждый со своим таймаутом, складывалась в минуты ожидания на
 	// молчащем сервере имён — и всё это внутри обработчика HTTP.
-	addrs := m.resolveRules(routing.Rules, resolver, hasIPv6Address(cfg.Interface.Address))
+	addrs := m.resolveRules(routing.Rules, resolver, hasIPv6Address(spec.Addresses))
 
 	if routing.Mode == config.RoutingModeDirectList {
 		// Всё в туннель, кроме перечисленного. Сначала сам туннель.
-		if err := m.setupDefaultVPNRoute(cfg); err != nil {
+		if err := m.setupDefaultVPNRoute(spec); err != nil {
 			log.Printf("Warning: failed to setup default VPN route: %v", err)
 		}
 	}

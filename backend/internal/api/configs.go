@@ -4,11 +4,13 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
-// Config handlers
+func (s *Server) handleGetProtocols(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, s.profiles.Protocols())
+}
+
 func (s *Server) handleGetConfigs(w http.ResponseWriter, r *http.Request) {
 	configs := s.config.GetAllConfigs()
 	jsonResponse(w, newConfigViews(configs))
@@ -38,15 +40,13 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := config.ParseAmneziaConfig(req.Name, req.RawConfig)
+	profile, err := s.profiles.Prepare(req.Name, req.RawConfig, id)
 	if err != nil {
 		jsonError(w, "Не удалось разобрать конфигурацию: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	cfg.Name = s.config.UniqueConfigName(cfg.Name, id)
-
-	if !s.config.UpdateConfig(id, *cfg) {
+	if !s.config.UpdateConfig(id, profile) {
 		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
 		return
 	}
@@ -78,19 +78,17 @@ func (s *Server) handleAddConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Имя необязательно: парсер выведет его из адреса сервера.
-	cfg, err := config.ParseAmneziaConfig(req.Name, req.RawConfig)
+	// Имя необязательно: каталог выведет его из адреса сервера.
+	profile, err := s.profiles.Prepare(req.Name, req.RawConfig, "")
 	if err != nil {
 		jsonError(w, "Не удалось разобрать конфигурацию: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	cfg.Name = s.config.UniqueConfigName(cfg.Name, "")
-
-	s.config.AddConfig(*cfg)
+	s.config.AddConfig(profile)
 	s.saveConfig()
 
-	jsonResponse(w, newConfigView(cfg))
+	jsonResponse(w, newConfigView(&profile))
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {

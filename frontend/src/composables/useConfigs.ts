@@ -1,8 +1,7 @@
 import { computed, ref, toValue, type MaybeRefOrGetter } from 'vue'
 import { api } from '../api/client'
 import { notifyError } from '../stores/toasts'
-import type { AmneziaConfig, ConnectionStatus } from '../api/types'
-
+import type { ConnectionStatus, Protocol, SavedConfig } from '../api/types'
 
 // Список конфигураций и выбранная из них.
 //
@@ -11,7 +10,8 @@ import type { AmneziaConfig, ConnectionStatus } from '../api/types'
 // только отражается.
 export function useConfigs(status: MaybeRefOrGetter<ConnectionStatus | null>) {
 
-  const configs = ref<AmneziaConfig[]>([])
+  const configs = ref<SavedConfig[]>([])
+  const protocols = ref<Protocol[]>([])
   const selectedId = ref<string | null>(null)
 
   // Последнее, что мы отправили службе. Нужно, чтобы не слать один и тот же
@@ -29,14 +29,16 @@ export function useConfigs(status: MaybeRefOrGetter<ConnectionStatus | null>) {
 
   async function load() {
     try {
-      const [list, storedFromService] = await Promise.all([
+      const [list, storedFromService, known] = await Promise.all([
         api.getConfigs(),
         // Со старой службой эндпоинта может не быть, но список конфигураций
         // всё равно должен отрисоваться.
-        api.getSelectedConfig().catch(() => '')
+        api.getSelectedConfig().catch(() => ''),
+        api.getProtocols().catch(() => [] as Protocol[])
       ])
 
       configs.value = list || []
+      protocols.value = known || []
       storedId = storedFromService
 
       const active = toValue(status)?.config_id
@@ -99,5 +101,5 @@ export function useConfigs(status: MaybeRefOrGetter<ConnectionStatus | null>) {
     storedId = id
   }
 
-  return { configs, selectedId, selected, activeName, load, select, follow }
+  return { configs, protocols, selectedId, selected, activeName, load, select, follow }
 }

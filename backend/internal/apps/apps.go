@@ -8,8 +8,6 @@
 package apps
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"regexp"
 	"sync"
 )
@@ -47,13 +45,6 @@ var ValidName = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{1,63}$`).MatchString
 // ярлыка, и отдавать по запросу произвольный файл с диска служба от root не
 // должна. Ключ появляется только для пути, который нашла она сама.
 var icons sync.Map // ключ → путь
-
-func registerIcon(path string) string {
-	sum := sha1.Sum([]byte(path))
-	key := hex.EncodeToString(sum[:8])
-	icons.Store(key, path)
-	return key
-}
 
 // IconPath возвращает путь к файлу иконки по ключу из списка.
 func IconPath(key string) (string, bool) {

@@ -278,3 +278,16 @@ func writeSystemFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 	return nil
 }
+
+// flushDNSCache сбрасывает кэш systemd-resolved, если он есть. Адрес,
+// выясненный до запуска посредника или до правки правил, иначе отдавался бы
+// из кэша мимо посредника — и маршрут по правилу для него не вставал.
+func flushDNSCache() {
+	resolvectl, err := exec.LookPath("resolvectl")
+	if err != nil {
+		return
+	}
+	if err := exec.Command(resolvectl, "flush-caches").Run(); err != nil {
+		log.Printf("Не удалось сбросить кэш DNS: %v", err)
+	}
+}

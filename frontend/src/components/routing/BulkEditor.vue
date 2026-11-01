@@ -9,19 +9,21 @@
       @keydown.ctrl.enter.prevent="dirty && save()"
       @keydown.esc="cancel"
     ></textarea>
-    <p class="hint" :class="{ bad: plan.bad.length }">{{ hint }}</p>
+    <p class="hint" :class="{ error: plan.bad.length }">{{ hint }}</p>
     <div class="row">
       <button class="btn btn--primary" :class="{ 'btn--busy': saving }" :disabled="!dirty || saving" @click="save">
-        {{ dirty ? `Сохранить ${change}` : 'Нет изменений' }}
+        <LoaderCircle v-if="saving" class="spin" aria-hidden="true" />
+        {{ saving ? 'Применяется…' : dirty ? `Сохранить ${change}` : 'Нет изменений' }}
       </button>
       <button class="btn btn--ghost" :disabled="saving" @click="cancel">Отмена</button>
-      <span class="faint keys">Ctrl+Enter — сохранить · Esc — отмена</span>
+      <span class="keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> — сохранить · <kbd>Esc</kbd> — отмена</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 // Правка всех правил текстом. Состояние — в useBulkEdit у родителя.
+import { LoaderCircle } from '@lucide/vue'
 import { nextTick, onMounted, ref } from 'vue'
 import type { useBulkEdit } from '../../composables/useBulkEdit'
 
@@ -45,16 +47,26 @@ onMounted(() =>
 <style scoped>
 .bulk {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .bulk__text {
-  min-height: 420px;
+  min-height: min(420px, 55vh);
 }
 
 .hint,
 .keys {
   color: var(--muted);
   font-size: 13px;
+}
+
+.row {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .keys {
+    display: none;
+  }
 }
 </style>

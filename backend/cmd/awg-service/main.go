@@ -23,8 +23,12 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/api"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/engine/awggo"
 	"github.com/user/amnezia-web-client/internal/geodata"
+	"github.com/user/amnezia-web-client/internal/profiles"
+	"github.com/user/amnezia-web-client/internal/protocol/amneziawg"
 	"github.com/user/amnezia-web-client/internal/service"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 	"github.com/user/amnezia-web-client/internal/version"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
@@ -104,6 +108,7 @@ func main() {
 		if err := service.Uninstall(serviceName); err != nil {
 			log.Fatal(err)
 		}
+		vpn.CleanupSystem()
 		fmt.Println("Служба удалена")
 		return
 	default:
@@ -157,7 +162,15 @@ func run(ctx context.Context, listen, configPath string) error {
 		return fmt.Errorf("не удалось загрузить состояние: %w", err)
 	}
 
-	vpnManager := vpn.NewManager()
+	// Протоколы и ядра, которые знает служба. Новый протокол подключается
+	// здесь — одной строкой в каждом списке; остальной код от них не зависит.
+	tunnels := tunnel.NewRegistry(
+		[]tunnel.Protocol{amneziawg.Protocol{}},
+		[]tunnel.Engine{awggo.Engine{}},
+	)
+	catalog := profiles.New(appConfig, tunnels)
+
+	vpnManager := vpn.NewManager(tunnels)
 
 	// Базы geoip/geosite лежат рядом с состоянием: каталог уже закрыт от
 	// чужих, и служба пишет туда от своего имени.
@@ -165,7 +178,7 @@ func run(ctx context.Context, listen, configPath string) error {
 	vpnManager.SetGeo(geo)
 	go geo.AutoUpdate(ctx, func(geodata.Kind) { vpnManager.RefreshGeo() })
 
-	handler := api.NewServer(appConfig, vpnManager, geo)
+	handler := api.NewServer(appConfig, catalog, vpnManager, geo)
 
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -173,7 +186,7 @@ func run(ctx context.Context, listen, configPath string) error {
 	}
 	log.Printf("API на http://%s", ln.Addr())
 
-	autoconnect(appConfig, vpnManager)
+	autoconnect(appConfig, catalog, vpnManager)
 
 	return serve(ctx, ln, handler, vpnManager)
 }
@@ -182,7 +195,7 @@ func run(ctx context.Context, listen, configPath string) error {
 //
 // Если выбирать нечего (конфигов ещё нет), просто ничего не делаем — настройка
 // остаётся включённой и сработает при следующем запуске.
-func autoconnect(appConfig *config.AppConfig, vpnManager *vpn.Manager) {
+func autoconnect(appConfig *config.AppConfig, catalog *profiles.Catalog, vpnManager *vpn.Manager) {
 	id := appConfig.GetAutoconnectConfigID()
 	if id == "" {
 		if appConfig.GetSettings().Autoconnect {
@@ -191,12 +204,13 @@ func autoconnect(appConfig *config.AppConfig, vpnManager *vpn.Manager) {
 		return
 	}
 
-	cfg := appConfig.GetConfig(id)
-	if cfg == nil {
+	target, err := catalog.Target(id)
+	if err != nil {
+		log.Printf("Автоподключение невозможно: %v", err)
 		return
 	}
 
-	log.Printf("Автоподключение к %s...", cfg.Name)
+	log.Printf("Автоподключение к %s...", target.Name)
 
 	// Копию правил берём через геттер: поле Routing защищено мьютексом
 	// конфига, а прямое обращение к нему из горутины — гонка с любым
@@ -205,7 +219,7 @@ func autoconnect(appConfig *config.AppConfig, vpnManager *vpn.Manager) {
 
 	go func() {
 		time.Sleep(autoconnectDelay)
-		if err := vpnManager.Connect(cfg, &routing); err != nil {
+		if err := vpnManager.Connect(target, &routing); err != nil {
 			log.Printf("Автоподключение не удалось: %v", err)
 		}
 	}()

@@ -207,9 +207,24 @@ var procGetBestRoute2 = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetBes
 // bestRoute спрашивает у системы, каким маршрутом она пойдёт к адресу
 // сейчас. В winipcfg этой функции нет, поэтому вызов прямой.
 func bestRoute(addr netip.Addr) (*winipcfg.MibIPforwardRow2, error) {
+	row, _, err := bestRouteFrom(addr)
+	return row, err
+}
+
+// SourceFor — адрес, с которого система сейчас пошла бы к addr, и
+// интерфейс этого пути.
+func SourceFor(addr netip.Addr) (netip.Addr, winipcfg.LUID, error) {
+	row, source, err := bestRouteFrom(addr)
+	if err != nil {
+		return netip.Addr{}, 0, err
+	}
+	return source, row.InterfaceLUID, nil
+}
+
+func bestRouteFrom(addr netip.Addr) (*winipcfg.MibIPforwardRow2, netip.Addr, error) {
 	var dest, source winipcfg.RawSockaddrInet
 	if err := dest.SetAddr(addr); err != nil {
-		return nil, err
+		return nil, netip.Addr{}, err
 	}
 
 	var row winipcfg.MibIPforwardRow2
@@ -225,11 +240,11 @@ func bestRoute(addr netip.Addr) (*winipcfg.MibIPforwardRow2, error) {
 	if ret != 0 {
 		err := windows.Errno(ret)
 		if err == windows.ERROR_NETWORK_UNREACHABLE || err == windows.ERROR_HOST_UNREACHABLE || err == windows.ERROR_NOT_FOUND {
-			return nil, fmt.Errorf("%w: %s", ErrUnreachable, addr)
+			return nil, netip.Addr{}, fmt.Errorf("%w: %s", ErrUnreachable, addr)
 		}
-		return nil, fmt.Errorf("GetBestRoute2 %s: %w", addr, err)
+		return nil, netip.Addr{}, fmt.Errorf("GetBestRoute2 %s: %w", addr, err)
 	}
-	return &row, nil
+	return &row, source.Addr(), nil
 }
 
 // isLocalAddress сообщает, назначен ли адрес самой машине.

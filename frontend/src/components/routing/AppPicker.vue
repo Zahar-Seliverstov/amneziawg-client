@@ -1,18 +1,24 @@
 <template>
   <div class="picker" role="dialog" aria-label="Выбор программы">
     <div class="row picker__head">
-      <input
-        ref="search"
-        v-model="query"
-        class="input"
-        placeholder="Найти программу"
-        spellcheck="false"
-        autocomplete="off"
-        aria-label="Найти программу"
-        @keydown.esc="emit('close')"
-      />
-      <button class="btn btn--ghost btn--sm" :class="{ 'btn--busy': loading }" @click="load">Обновить</button>
-      <button class="btn btn--ghost btn--sm" title="Esc" @click="emit('close')">Закрыть</button>
+      <div class="field-box grow picker__search">
+        <Search aria-hidden="true" />
+        <input
+          ref="search"
+          v-model="query"
+          placeholder="Найти программу"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="Найти программу"
+          @keydown.esc="emit('close')"
+        />
+      </div>
+      <button class="btn btn--ghost btn--icon btn--sm" :disabled="loading" aria-label="Обновить список" title="Обновить список" @click="load">
+        <RefreshCw :class="{ spin: loading }" aria-hidden="true" />
+      </button>
+      <button class="btn btn--ghost btn--icon btn--sm" aria-label="Закрыть" title="Закрыть · Esc" @click="emit('close')">
+        <X aria-hidden="true" />
+      </button>
     </div>
 
     <p class="picker__note">{{ note }}</p>
@@ -39,15 +45,18 @@
           <span v-else class="app__icon app__icon--letter" aria-hidden="true">{{ app.title.charAt(0).toUpperCase() }}</span>
           <span class="grow ellipsis">
             {{ app.title }}
-            <span class="faint mono">app:{{ app.name }}<template v-if="app.hint"> · {{ app.hint }}</template></span>
+            <span class="app__name ellipsis">app:{{ app.name }}<template v-if="app.hint"> · {{ app.hint }}</template></span>
           </span>
-          <span v-if="app.running" class="ok" :title="`Процессов: ${app.running}`">●</span>
-          <span class="app__action">{{ isAdded(app) ? 'в списке' : pending === app.name ? '…' : 'Добавить' }}</span>
+          <span class="app__action">
+            <LoaderCircle v-if="pending === app.name" class="spin" aria-hidden="true" />
+            <template v-else>{{ isAdded(app) ? 'В списке' : 'Добавить' }}</template>
+          </span>
         </button>
       </template>
 
       <p v-if="catalog && !catalog.supported" class="empty">
-        Правила для программ работают только на Linux.
+        Здесь служба не может показать список программ.
+        Правило можно вписать вручную: app:имя — по имени процесса.
       </p>
       <p v-else-if="!loading && !shown.length" class="empty">
         {{ catalog?.apps.length ? 'Такой программы нет.' : 'Программ не нашлось.' }}
@@ -59,6 +68,7 @@
 
 <script setup lang="ts">
 // Выбор программы для правила app: из запущенных и установленных.
+import { LoaderCircle, RefreshCw, Search, X } from '@lucide/vue'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { api } from '../../api/client'
 import type { AppCatalog, AppInfo } from '../../api/types'
@@ -127,27 +137,32 @@ onMounted(() => {
 
 <style scoped>
 .picker__head {
-  padding: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 2px;
+  padding: 6px;
+}
+
+.picker__search {
+  height: 32px;
+  padding-left: 10px;
 }
 
 .picker__note {
-  padding: 6px 10px;
-  color: var(--faint);
-  font-size: var(--fs-s);
+  padding: 4px 12px 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .picker__list {
-  max-height: 360px;
+  max-height: min(380px, 55vh);
   overflow-y: auto;
-  padding-bottom: 6px;
+  padding: 0 4px 6px;
 }
 
 .picker__section {
-  padding: 8px 10px 4px;
-  color: var(--muted);
-  font-size: var(--fs-s);
-  font-weight: normal;
+  padding: 12px 8px 4px;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .app {
@@ -155,40 +170,50 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 30px;
-  padding: 0 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border-radius: 6px;
   text-align: left;
+  transition: background-color var(--t);
 }
 
 .app:hover:not(:disabled) {
-  background: var(--sel);
+  background: var(--surface);
 }
 
 .app--added:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .app__icon {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex: none;
 }
 
 .app__icon--letter {
   display: grid;
   place-items: center;
-  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
   color: var(--muted);
   font-size: 11px;
+  font-weight: 600;
+}
+
+.app__name {
+  display: block;
+  color: var(--faint);
+  font-size: 12px;
 }
 
 .app__action {
-  min-width: 56px;
-  color: var(--accent);
-  text-align: right;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .empty {
-  padding: 8px 10px;
+  padding: 10px 8px;
 }
 </style>

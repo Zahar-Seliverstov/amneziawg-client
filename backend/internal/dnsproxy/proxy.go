@@ -42,10 +42,15 @@ type Answer struct {
 	TTL time.Duration
 }
 
-// Observer вызывается для каждого ответа, в котором нашлись адреса.
-// Вызов происходит в отдельной горутине обработки запроса, поэтому
-// реализация обязана быть безопасной для конкурентного вызова.
+// Observer вызывается для каждого ответа, в котором нашлись адреса, — ДО
+// того, как ответ уйдёт клиенту. Вызов происходит в отдельной горутине
+// обработки запроса, поэтому реализация обязана быть безопасной для
+// конкурентного вызова.
 type Observer func(Answer)
+
+// Filter сообщает, что на вопрос AAAA об этом имени отвечать пусто. Имя — в
+// виде Answer.Name.
+type Filter func(name string) bool
 
 const (
 	// queryTimeout — сколько ждём вышестоящий сервер. Системный резолвер
@@ -70,6 +75,7 @@ const (
 // Нулевое значение непригодно, используйте New.
 type Proxy struct {
 	observe Observer
+	noAAAA  Filter
 
 	mu       sync.Mutex
 	started  bool
@@ -86,6 +92,15 @@ type Proxy struct {
 // как обычный пересыльщик.
 func New(observe Observer) *Proxy {
 	return &Proxy{observe: observe, stop: make(chan struct{})}
+}
+
+// DropAAAA задаёт имена, на вопрос AAAA о которых посредник отвечает пусто,
+// не спрашивая вышестоящий сервер. Вызывать до Start.
+//
+// Нужно, когда имя обязано идти через туннель, а у туннеля нет IPv6:
+// получив адрес IPv6, программа ушла бы к сайту напрямую, мимо VPN.
+func (p *Proxy) DropAAAA(filter Filter) {
+	p.noAAAA = filter
 }
 
 // Start открывает слушающий сокет и начинает обслуживать запросы.
@@ -115,27 +130,9 @@ func (p *Proxy) Start(listen netip.AddrPort, upstream []netip.AddrPort) error {
 		return err
 	}
 
-	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(listen))
+	conn, listener, err := listenPair(listen)
 	if err != nil {
-		return fail(fmt.Errorf("dnsproxy: не удалось занять %s по UDP: %w", listen, err))
-	}
-
-	// TCP занимаем на ТОМ ЖЕ адресе и порту, что достался UDP. Резолвер,
-	// получив усечённый ответ, повторяет вопрос по TCP ровно туда же, куда
-	// задавал его по UDP, — разъехавшиеся порты означали бы, что повторить
-	// вопрос некуда. При запрошенном нулевом порте номер выбирает ядро, и
-	// узнать его можно только у открытого сокета.
-	actual := conn.LocalAddr().(*net.UDPAddr).AddrPort()
-
-	// TCP обязателен, а не желателен. Посредник без него отвечал бы на
-	// обычные запросы и молча терял те, что не поместились в датаграмму:
-	// резолвер повторяет их по TCP, и повтор упирался бы в закрытый порт.
-	// Лучше не подниматься вовсе — вызывающий тогда настроит DNS напрямую,
-	// и разрешение имён останется исправным целиком.
-	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(actual))
-	if err != nil {
-		conn.Close()
-		return fail(fmt.Errorf("dnsproxy: не удалось занять %s по TCP: %w", actual, err))
+		return fail(err)
 	}
 
 	p.mu.Lock()
@@ -149,6 +146,41 @@ func (p *Proxy) Start(listen netip.AddrPort, upstream []netip.AddrPort) error {
 	go p.serveTCP(listener)
 
 	return nil
+}
+
+// listenPair занимает один и тот же адрес и порт по UDP и TCP.
+//
+// При нулевом порте номер выбирает ядро для UDP, и по TCP он может
+// оказаться занят — тогда пробуем ещё раз с другим номером.
+func listenPair(listen netip.AddrPort) (*net.UDPConn, *net.TCPListener, error) {
+	attempts := 1
+	if listen.Port() == 0 {
+		attempts = 5
+	}
+
+	var err error
+	for i := 0; i < attempts; i++ {
+		var conn *net.UDPConn
+		conn, err = net.ListenUDP("udp", net.UDPAddrFromAddrPort(listen))
+		if err != nil {
+			return nil, nil, fmt.Errorf("dnsproxy: не удалось занять %s по UDP: %w", listen, err)
+		}
+
+		// TCP — на ТОМ ЖЕ адресе и порту, что достался UDP: резолвер,
+		// получив усечённый ответ, повторяет вопрос по TCP ровно туда же.
+		//
+		// TCP обязателен, а не желателен: без него вопросы, не
+		// поместившиеся в датаграмму, терялись бы. Лучше не подниматься
+		// вовсе — вызывающий тогда настроит DNS напрямую.
+		actual := conn.LocalAddr().(*net.UDPAddr).AddrPort()
+		listener, tcpErr := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(actual))
+		if tcpErr == nil {
+			return conn, listener, nil
+		}
+		conn.Close()
+		err = fmt.Errorf("dnsproxy: не удалось занять %s по TCP: %w", actual, tcpErr)
+	}
+	return nil, nil, err
 }
 
 // servers возвращает список вышестоящих серверов.
@@ -263,22 +295,60 @@ func (p *Proxy) serveUDP(conn *net.UDPConn) {
 // по TCP, — дело резолвера, и подменять его решение нельзя. Раньше это было
 // тупиком, теперь повтор придёт на наш же TCP-сокет.
 func (p *Proxy) handleUDP(conn *net.UDPConn, query []byte, client *net.UDPAddr) {
-	response, err := exchangeUDP(p.servers(), query)
+	response, err := p.answer(query, exchangeUDP)
 	if err != nil {
 		log.Printf("dnsproxy: запрос не обслужен: %v", err)
-		if refusal, ok := servfail(query); ok {
+		if refusal, ok := reply(query, dnsmessage.RCodeServerFailure); ok {
 			conn.WriteToUDP(refusal, client)
 		}
 		return
 	}
 
-	// Клиенту отвечаем в первую очередь: наблюдение — побочная задача,
-	// и задерживать из-за неё резолвинг нельзя.
 	if _, err := conn.WriteToUDP(response, client); err != nil {
 		log.Printf("dnsproxy: не удалось ответить клиенту: %v", err)
 	}
+}
+
+// answer готовит ответ на запрос — общая часть обоих транспортов.
+//
+// Наблюдатель вызывается ДО того, как ответ уйдёт клиенту. Раньше было
+// наоборот, «чтобы не задерживать резолвинг», и это делало правила по именам
+// ненадёжными: программа получала адрес и открывала соединение раньше, чем
+// вставал маршрут. Соединение уходило по старому пути и так на нём и
+// оставалось — сайт из списка «только через VPN» открывался напрямую, а
+// после появления маршрута уже открытое соединение и вовсе повисало.
+// Маршрут ставится за единицы миллисекунд и только для новых адресов —
+// это дешевле любого из этих отказов.
+func (p *Proxy) answer(query []byte, exchange func([]netip.AddrPort, []byte) ([]byte, error)) ([]byte, error) {
+	if p.suppressed(query) {
+		if empty, ok := reply(query, dnsmessage.RCodeSuccess); ok {
+			return empty, nil
+		}
+	}
+
+	response, err := exchange(p.servers(), query)
+	if err != nil {
+		return nil, err
+	}
 
 	p.observeAnswer(response)
+	return response, nil
+}
+
+// suppressed сообщает, что на запрос нужно ответить пусто (см. DropAAAA).
+func (p *Proxy) suppressed(query []byte) bool {
+	if p.noAAAA == nil {
+		return false
+	}
+	var parser dnsmessage.Parser
+	if _, err := parser.Start(query); err != nil {
+		return false
+	}
+	question, err := parser.Question()
+	if err != nil || question.Type != dnsmessage.TypeAAAA {
+		return false
+	}
+	return p.noAAAA(normalizeName(question.Name.String()))
 }
 
 // exchangeUDP пересылает запрос серверам по очереди и возвращает первый ответ.
@@ -408,10 +478,11 @@ func normalizeName(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
-// servfail собирает отказ в ответ на запрос: без него системный резолвер
-// ждёт таймаута, и любая заминка вышестоящего сервера превращается в
-// многосекундное подвисание всего, что резолвит имена.
-func servfail(query []byte) ([]byte, bool) {
+// reply собирает ответ без записей с заданным кодом: RCodeServerFailure —
+// отказ (без него системный резолвер ждёт таймаута, и любая заминка
+// вышестоящего сервера превращается в многосекундное подвисание), а
+// RCodeSuccess — «записей такого типа нет».
+func reply(query []byte, rcode dnsmessage.RCode) ([]byte, bool) {
 	var parser dnsmessage.Parser
 
 	header, err := parser.Start(query)
@@ -424,7 +495,7 @@ func servfail(query []byte) ([]byte, bool) {
 	}
 
 	header.Response = true
-	header.RCode = dnsmessage.RCodeServerFailure
+	header.RCode = rcode
 
 	builder := dnsmessage.NewBuilder(nil, header)
 	if err := builder.StartQuestions(); err != nil {

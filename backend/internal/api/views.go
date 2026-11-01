@@ -8,8 +8,8 @@ import (
 
 // Здесь описано, что API отдаёт наружу вместо самой конфигурации.
 //
-// Хранимая AmneziaWGConfig содержит приватный ключ — и разобранным полем, и
-// внутри исходного текста .conf. Окну он не нужен нигде, кроме формы правки,
+// Хранимая конфигурация содержит секреты (у AmneziaWG — приватный ключ)
+// внутри исходного текста. Окну он не нужен нигде, кроме формы правки,
 // где пользователь видит собственный файл целиком. Поэтому список и ответы на
 // изменения не несут секретов вовсе, а текст приходит только по явному
 // запросу одной конфигурации.
@@ -22,6 +22,7 @@ import (
 type configView struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Protocol  string    `json:"protocol"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -32,11 +33,11 @@ type configDetail struct {
 	RawConfig string `json:"raw_config"`
 }
 
-func newConfigView(cfg *config.AmneziaWGConfig) configView {
-	return configView{ID: cfg.ID, Name: cfg.Name, CreatedAt: cfg.CreatedAt}
+func newConfigView(cfg *config.Profile) configView {
+	return configView{ID: cfg.ID, Name: cfg.Name, Protocol: cfg.Protocol, CreatedAt: cfg.CreatedAt}
 }
 
-func newConfigViews(configs []config.AmneziaWGConfig) []configView {
+func newConfigViews(configs []config.Profile) []configView {
 	// Не nil, а пустой срез: пустой список должен приходить как [], иначе
 	// окну придётся отличать «конфигураций нет» от «поле не пришло».
 	views := make([]configView, 0, len(configs))
@@ -46,6 +47,6 @@ func newConfigViews(configs []config.AmneziaWGConfig) []configView {
 	return views
 }
 
-func newConfigDetail(cfg *config.AmneziaWGConfig) configDetail {
+func newConfigDetail(cfg *config.Profile) configDetail {
 	return configDetail{configView: newConfigView(cfg), RawConfig: cfg.RawConfig}
 }

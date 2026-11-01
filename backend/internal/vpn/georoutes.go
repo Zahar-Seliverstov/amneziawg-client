@@ -74,12 +74,12 @@ func (m *Manager) geoPrefixes(code string, v6 bool) ([]string, error) {
 func (m *Manager) RefreshGeo() {
 	m.mu.RLock()
 	state := m.status.State
-	cfg := m.activeConfig
+	spec := m.active
 	rc := m.routingConfig
 	proxyUp := m.dnsProxy != nil
 	m.mu.RUnlock()
 
-	if state != StateConnected || cfg == nil || rc == nil {
+	if state != StateConnected || spec == nil || rc == nil {
 		return
 	}
 
@@ -87,7 +87,7 @@ func (m *Manager) RefreshGeo() {
 	// было. Поднять его можно только пересборкой.
 	if needsNameRouting(rc) && !proxyUp {
 		log.Printf("База обновлена — пересобираем маршрутизацию")
-		if err := m.configureTraffic(cfg, rc); err != nil {
+		if err := m.configureTraffic(spec, rc); err != nil {
 			log.Printf("Пересборка после обновления базы: %v", err)
 		}
 		return
@@ -121,6 +121,6 @@ func (m *Manager) RefreshGeo() {
 	}
 
 	m.dropRuleRoutes(gone)
-	resolver := resolverFor(parseDNSServers(cfg.Interface.DNS))
-	m.installRuleRoutes(rc.Mode, m.resolveRules(geoip, resolver, hasIPv6Address(cfg.Interface.Address)))
+	resolver := resolverFor(parseDNSServers(spec.DNS))
+	m.installRuleRoutes(rc.Mode, m.resolveRules(geoip, resolver, hasIPv6Address(spec.Addresses)))
 }

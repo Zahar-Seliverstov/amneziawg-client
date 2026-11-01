@@ -1,4 +1,4 @@
-package vpn
+package awggo
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/protocol/amneziawg"
 )
 
 // stubTUN заменяет /dev/net/tun: рукопожатие идёт по UDP и прав root не
@@ -49,7 +49,7 @@ func (s *stubTUN) Close() error {
 // TestRealHandshake берёт настоящий конфиг пользователя и проверяет, дойдёт
 // ли рукопожатие до сервера на текущей версии ядра. Запускать вручную:
 //
-//	go test ./internal/vpn/ -run RealHandshake -v -tags=probe
+//	AWG_PROBE=1 go test ./internal/engine/awggo/ -run RealHandshake -v
 //
 // Ключи не печатаются: наружу идут только счётчики.
 func TestRealHandshake(t *testing.T) {
@@ -78,19 +78,23 @@ func TestRealHandshake(t *testing.T) {
 
 	for _, entry := range stored.Configs {
 		t.Run(entry.Name, func(t *testing.T) {
-			cfg, err := config.ParseAmneziaConfig(entry.Name, entry.RawConfig)
+			cfg, err := amneziawg.Parse(entry.RawConfig)
 			if err != nil {
 				t.Fatalf("не разобрать конфиг: %v", err)
 			}
 
-			m := NewManager()
+			uapi, err := buildUAPI(cfg, 0)
+			if err != nil {
+				t.Fatalf("UAPI: %v", err)
+			}
+
 			dev := device.NewDevice(newStubTUN(), conn.NewDefaultBind(), &device.Logger{
 				Verbosef: func(f string, a ...any) {},
 				Errorf:   func(f string, a ...any) { t.Logf("ядро: "+f, a...) },
 			})
 			defer dev.Close()
 
-			if err := dev.IpcSet(m.buildUAPIConfig(cfg)); err != nil {
+			if err := dev.IpcSet(uapi); err != nil {
 				t.Fatalf("ядро отвергло конфигурацию: %v", err)
 			}
 			if err := dev.Up(); err != nil {
@@ -105,7 +109,7 @@ func TestRealHandshake(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				st := parseDeviceStats(state)
+				st := parseStats(state)
 
 				if !st.LastHandshake.IsZero() {
 					t.Logf("РУКОПОЖАТИЕ ЕСТЬ через %v: tx=%d rx=%d",
@@ -115,7 +119,7 @@ func TestRealHandshake(t *testing.T) {
 			}
 
 			state, _ := dev.IpcGet()
-			st := parseDeviceStats(state)
+			st := parseStats(state)
 			t.Errorf("рукопожатия НЕТ за 20с: tx=%d rx=%d (сервер молчит на этой версии ядра)", st.TxBytes, st.RxBytes)
 		})
 	}

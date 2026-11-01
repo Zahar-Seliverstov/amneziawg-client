@@ -1,16 +1,25 @@
 // Типы данных API службы awg-service. Источник правды — internal/api в Go.
 
-// Конфигурация в том виде, в каком её отдаёт список. Секретов здесь нет:
-// приватный ключ лежит в тексте .conf, а тот приходит только по запросу
+// Протокол, который умеет разбирать служба. Интерфейс их не зашивает:
+// список приходит от службы (GET /protocols).
+export interface Protocol {
+  id: string
+  title: string
+}
+
+// Сохранённая конфигурация в том виде, в каком её отдаёт список. Секретов
+// здесь нет: ключи лежат в исходном тексте, а тот приходит только по запросу
 // одной конфигурации — форме правки (см. getConfig).
-export interface AmneziaConfig {
+export interface SavedConfig {
   id: string
   name: string
+  // protocol — идентификатор протокола; пуст у записей старых версий.
+  protocol: string
   created_at: string
 }
 
-// Подробности одной конфигурации: то же плюс исходный текст .conf.
-export interface AmneziaConfigDetail extends AmneziaConfig {
+// Подробности одной конфигурации: то же плюс исходный текст.
+export interface SavedConfigDetail extends SavedConfig {
   raw_config: string
 }
 

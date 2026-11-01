@@ -1,55 +1,80 @@
 <template>
-  <form class="form" @submit.prevent="submit">
+  <form class="form" @submit.prevent="submit" @keydown.ctrl.enter.prevent="submit" @keydown.meta.enter.prevent="submit">
     <label class="field">
       <span>Название <span class="faint">— необязательно, иначе адрес сервера</span></span>
-      <input v-model="name" type="text" class="input" />
+      <input v-model="name" type="text" class="input" autocomplete="off" />
     </label>
-    <label class="field">
+    <div class="field">
       <span class="row">
-        <span class="grow">Файл конфигурации .conf</span>
-        <button type="button" class="btn btn--ghost btn--sm" @click="file?.click()">Открыть файл…</button>
+        <label class="grow" :for="areaId">Текст конфигурации</label>
+        <button type="button" class="btn btn--ghost btn--sm" @click="file?.click()">
+          <FolderOpen aria-hidden="true" />Открыть файл…
+        </button>
       </span>
       <textarea
+        :id="areaId"
         ref="text"
         v-model="content"
         class="input"
+        :class="{ 'input--drop': dragging }"
         spellcheck="false"
-        placeholder="[Interface]&#10;PrivateKey = …&#10;Address = 10.0.0.2/32&#10;&#10;[Peer]&#10;PublicKey = …&#10;Endpoint = host:51820"
-        @keydown.ctrl.enter.prevent="submit"
+        placeholder="Вставьте текст конфигурации, выданной сервером, или перетащите сюда файл"
+        @dragover.prevent="dragging = true"
+        @dragleave="dragging = false"
+        @drop.prevent="onDrop"
       ></textarea>
-    </label>
-    <div class="row">
-      <button class="btn btn--primary" type="submit" :disabled="!content.trim() || busy">Сохранить</button>
-      <button class="btn btn--ghost" type="button" @click="$emit('cancel')">Отмена</button>
-      <span class="faint hint">Ctrl+Enter</span>
+      <span v-if="formats" class="faint note">Поддерживаются: {{ formats }}</span>
     </div>
-    <input ref="file" type="file" accept=".conf,text/plain" hidden @change="onFile" />
+    <div class="row actions">
+      <span class="faint hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
+      <span class="grow"></span>
+      <button class="btn btn--ghost" type="button" @click="$emit('cancel')">Отмена</button>
+      <button class="btn btn--primary" type="submit" :class="{ 'btn--busy': busy }" :disabled="!content.trim() || busy">
+        <LoaderCircle v-if="busy" class="spin" aria-hidden="true" />
+        {{ busy ? 'Сохранение…' : 'Сохранить' }}
+      </button>
+    </div>
+    <input ref="file" type="file" hidden @change="onPick" />
   </form>
 </template>
 
 <script setup lang="ts">
-// Форма подключения — одна и для добавления, и для правки.
-import { onMounted, ref } from 'vue'
+// Форма подключения — одна и для добавления, и для правки: вставить текст
+// или открыть файл (кнопкой или перетаскиванием).
+import { FolderOpen, LoaderCircle } from '@lucide/vue'
+import { onMounted, ref, useId } from 'vue'
 
-const props = defineProps<{ initialName?: string; initialContent?: string; busy?: boolean }>()
+const props = defineProps<{ initialName?: string; initialContent?: string; busy?: boolean; formats?: string }>()
 const emit = defineEmits<{ save: [name: string, content: string]; cancel: [] }>()
 
 const name = ref(props.initialName ?? '')
 const content = ref(props.initialContent ?? '')
+const dragging = ref(false)
 const text = ref<HTMLTextAreaElement | null>(null)
 const file = ref<HTMLInputElement | null>(null)
+const areaId = useId()
 
 function submit() {
-  if (content.value.trim()) emit('save', name.value.trim(), content.value)
+  if (content.value.trim() && !props.busy) emit('save', name.value.trim(), content.value)
 }
 
-async function onFile(e: Event) {
+async function load(picked: File | undefined) {
+  if (!picked) return
+  content.value = await picked.text()
+  // Имя файла — хорошее название по умолчанию: его обычно и дают серверу.
+  if (!name.value.trim()) name.value = picked.name.replace(/\.[^.]+$/, '')
+}
+
+function onPick(e: Event) {
   const input = e.target as HTMLInputElement
   const picked = input.files?.[0]
   input.value = ''
-  if (!picked) return
-  content.value = await picked.text()
-  if (!name.value.trim()) name.value = picked.name.replace(/\.conf$/i, '')
+  load(picked)
+}
+
+function onDrop(e: DragEvent) {
+  dragging.value = false
+  load(e.dataTransfer?.files?.[0])
 }
 
 onMounted(() => text.value?.focus())
@@ -58,11 +83,21 @@ onMounted(() => text.value?.focus())
 <style scoped>
 .form {
   display: grid;
-  gap: 10px;
-  padding: 10px 0 14px;
+  gap: 16px;
 }
 
+.input--drop {
+  background: var(--surface-hover);
+}
+
+.note,
 .hint {
   font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .hint {
+    display: none;
+  }
 }
 </style>

@@ -11,6 +11,9 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/geodata"
+	"github.com/user/amnezia-web-client/internal/profiles"
+	"github.com/user/amnezia-web-client/internal/protocol/amneziawg"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
@@ -24,8 +27,11 @@ func TestEndpointHostPort(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		cfg := &config.AmneziaWGConfig{Peers: []config.PeerConfig{{Endpoint: c.endpoint}}}
-		host, port := endpointHostPort(cfg)
+		var endpoints []string
+		if c.endpoint != "" {
+			endpoints = []string{c.endpoint}
+		}
+		host, port := endpointHostPort(endpoints)
 		if host != c.host || port != c.port {
 			t.Errorf("%q: ожидалось (%q, %q), получено (%q, %q)", c.endpoint, c.host, c.port, host, port)
 		}
@@ -105,7 +111,18 @@ func TestTCPPingFiltered(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
+// testProfile — сохранённая конфигурация AmneziaWG с заданным сервером;
+// пустой endpoint — без строки Endpoint.
+func testProfile(id, name, endpoint string) config.Profile {
+	raw := "[Interface]\nPrivateKey = qO8QDrIKR3vufYDHIRcbYSuVFPGqOcJ2P08S6r67dFA=\nAddress = 10.8.0.2/32\n\n" +
+		"[Peer]\nPublicKey = dGVzdHB1YmxpY2tleXRlc3RwdWJsaWNrZXkxMjM0NTY=\nAllowedIPs = 0.0.0.0/0\n"
+	if endpoint != "" {
+		raw += "Endpoint = " + endpoint + "\n"
+	}
+	return config.Profile{ID: id, Name: name, Protocol: amneziawg.ID, RawConfig: raw}
+}
+
+func newTestServer(t *testing.T, cfgs ...config.Profile) *Server {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -117,7 +134,8 @@ func newTestServer(t *testing.T, cfgs ...config.AmneziaWGConfig) *Server {
 		appCfg.SetSelectedConfig(cfgs[0].ID)
 	}
 
-	return NewServer(appCfg, vpn.NewManager(), geodata.Open(t.TempDir()))
+	tunnels := tunnel.NewRegistry([]tunnel.Protocol{amneziawg.Protocol{}}, nil)
+	return NewServer(appCfg, profiles.New(appCfg, tunnels), vpn.NewManager(tunnels), geodata.Open(t.TempDir()))
 }
 
 func doPing(t *testing.T, s *Server) pingResponse {
@@ -139,7 +157,7 @@ func TestHandlePingNoConfig(t *testing.T) {
 }
 
 func TestHandlePingNoEndpoint(t *testing.T) {
-	s := newTestServer(t, config.AmneziaWGConfig{ID: "c1"})
+	s := newTestServer(t, testProfile("c1", "тест", ""))
 	if got := doPing(t, s); got.Success || got.Error == "" {
 		t.Fatalf("ожидалась ошибка, получено %+v", got)
 	}
@@ -149,10 +167,7 @@ func TestHandlePingReal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("нужен интернет")
 	}
-	s := newTestServer(t, config.AmneziaWGConfig{
-		ID:    "c1",
-		Peers: []config.PeerConfig{{Endpoint: "1.1.1.1:443"}},
-	})
+	s := newTestServer(t, testProfile("c1", "тест", "1.1.1.1:443"))
 
 	got := doPing(t, s)
 	if !got.Success {

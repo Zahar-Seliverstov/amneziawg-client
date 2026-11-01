@@ -5,10 +5,11 @@
 // не нужно. Объект один на всё приложение: состояния у него нет.
 
 import type {
-  AmneziaConfig,
-  AmneziaConfigDetail,
+  SavedConfig,
+  SavedConfigDetail,
   AppCatalog,
   AppSettings,
+  Protocol,
   GeoKind,
   GeoState,
   PingResult,
@@ -58,17 +59,18 @@ function json<T>(method: 'POST' | 'PUT', path: string, payload?: unknown) {
 
 export const api = {
   // ── Подключения ──────────────────────────────────────────────────────
-  getConfigs: () => get<AmneziaConfig[]>('/configs'),
+  getProtocols: () => get<Protocol[]>('/protocols'),
+  getConfigs: () => get<SavedConfig[]>('/configs'),
 
   // Текст .conf запрашивается отдельно и только когда он нужен: в нём
   // приватный ключ, и держать его в памяти окна незачем.
-  getConfig: (id: string) => get<AmneziaConfigDetail>(`/configs/${id}`),
+  getConfig: (id: string) => get<SavedConfigDetail>(`/configs/${id}`),
 
   addConfig: (name: string, rawConfig: string) =>
-    json<AmneziaConfig>('POST', '/configs', { name, raw_config: rawConfig }),
+    json<SavedConfig>('POST', '/configs', { name, raw_config: rawConfig }),
 
   updateConfig: (id: string, name: string, rawConfig: string) =>
-    json<AmneziaConfig>('PUT', `/configs/${id}`, { name, raw_config: rawConfig }),
+    json<SavedConfig>('PUT', `/configs/${id}`, { name, raw_config: rawConfig }),
 
   deleteConfig: (id: string) => send<void>(`/configs/${id}`, { method: 'DELETE' }),
 

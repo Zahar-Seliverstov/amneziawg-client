@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/iproute"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // Ради этого правила и собираются в пакет: сотня маршрутов — один запуск ip,
@@ -25,7 +26,7 @@ func TestRulesGoOutInOneBatch(t *testing.T) {
 		},
 	}
 
-	if err := m.configureRouting(&config.AmneziaWGConfig{}, routing); err != nil {
+	if err := m.configureRouting(&tunnel.Spec{}, routing); err != nil {
 		t.Fatalf("настройка не удалась: %v", err)
 	}
 

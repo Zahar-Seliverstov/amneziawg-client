@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // В режиме «только список» серверы имён из конфига идут через туннель:
@@ -13,8 +13,8 @@ func TestRouteDNSServersViaTunnel(t *testing.T) {
 	ip := &fakeIP{}
 	m := managerWith(ip)
 
-	cfg := &config.AmneziaWGConfig{}
-	cfg.Interface.DNS = []string{"1.1.1.1", "192.168.0.1", "127.0.0.53", "2606:4700:4700::1111"}
+	cfg := &tunnel.Spec{}
+	cfg.DNS = []string{"1.1.1.1", "192.168.0.1", "127.0.0.53", "2606:4700:4700::1111"}
 	m.routeDNSServers(cfg)
 
 	got := strings.Join(ipJoined(ip.added), "|")

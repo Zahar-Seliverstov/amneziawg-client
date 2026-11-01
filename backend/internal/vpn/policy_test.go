@@ -1,11 +1,14 @@
 package vpn
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // fakePolicy подменяет маршрутизацию по политикам: запоминает, что от неё
@@ -21,22 +24,23 @@ func (f *fakePolicy) Table() []string    { return []string{"table", "51821"} }
 func (f *fakePolicy) TunnelMark() uint32 { return 0x51820 }
 func (f *fakePolicy) Up(full bool) error { f.ups = append(f.ups, full); return nil }
 func (f *fakePolicy) Down()              { f.downs++ }
-func (f *fakePolicy) SetApps(names appSet, viaTunnel bool, ifname string, v6 bool) error {
-	f.apps, f.viaTunnel = names, viaTunnel
+func (f *fakePolicy) SetApps(req appRequest) error {
+	f.apps, f.viaTunnel = req.apps, req.viaTunnel
 	return nil
 }
 
 func policyManager(ip *fakeIP) (*Manager, *fakePolicy) {
 	p := &fakePolicy{}
 	m := managerWith(ip)
-	m.policy = p
+	m.policy, m.apps = p, p
 	return m, p
 }
 
-func fullConfig() *config.AmneziaWGConfig {
-	return &config.AmneziaWGConfig{
-		Interface: config.InterfaceConfig{Address: []string{"10.8.1.18/32"}},
-		Peers:     []config.PeerConfig{{Endpoint: "203.0.113.7:51820", AllowedIPs: []string{"0.0.0.0/0"}}},
+func fullConfig() *tunnel.Spec {
+	return &tunnel.Spec{
+		Addresses:  []string{"10.8.1.18/32"},
+		Endpoints:  []string{"203.0.113.7:51820"},
+		AllowedIPs: []string{"0.0.0.0/0"},
 	}
 }
 
@@ -148,18 +152,30 @@ func TestPolicyAppsFollowMode(t *testing.T) {
 
 // Метка туннеля уходит в ядро: без неё маршрут по умолчанию в нашей таблице
 // увёл бы в туннель и пакеты к самому серверу.
-func TestPolicyUAPICarriesTunnelMark(t *testing.T) {
+func TestPolicyPassesTunnelMarkToEngine(t *testing.T) {
 	m, _ := policyManager(&fakeIP{})
-	cfg := fullConfig()
-	cfg.Interface.PrivateKey = "YAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
+	engine := &recordingEngine{}
+	m.runConnection(context.Background(), engine, nil, nil)
 
-	if uapi := m.buildUAPIConfig(cfg); !strings.Contains(uapi, "fwmark=333856\n") {
-		t.Fatalf("в UAPI нет метки туннеля:\n%s", uapi)
+	if engine.opts.FirewallMark != 333856 {
+		t.Fatalf("ядру передана метка %d, ожидалась 333856", engine.opts.FirewallMark)
 	}
 
-	// Без политик — как раньше, без метки.
+	// Без политик — без метки.
 	plain := managerWith(&fakeIP{})
-	if uapi := plain.buildUAPIConfig(cfg); strings.Contains(uapi, "fwmark") {
-		t.Fatalf("метка без маршрутизации по политикам:\n%s", uapi)
+	plain.runConnection(context.Background(), engine, nil, nil)
+	if engine.opts.FirewallMark != 0 {
+		t.Fatalf("метка %d без маршрутизации по политикам", engine.opts.FirewallMark)
 	}
+}
+
+// recordingEngine запоминает параметры запуска и отказывает: дальше запуска
+// тесту идти незачем.
+type recordingEngine struct{ opts tunnel.Options }
+
+func (e *recordingEngine) ID() string                  { return "запись" }
+func (e *recordingEngine) Supports(tunnel.Config) bool { return true }
+func (e *recordingEngine) Start(_ tunnel.Config, opts tunnel.Options) (tunnel.Device, error) {
+	e.opts = opts
+	return nil, errors.New("запуск не нужен")
 }

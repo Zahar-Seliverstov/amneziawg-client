@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@lucide/vue": "1.66.0",
     "vue": "3.5.42"
   },
   "devDependencies": {

@@ -1,6 +1,11 @@
 package api
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+
+	"github.com/user/amnezia-web-client/internal/profiles"
+)
 
 // VPN handlers
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
@@ -17,15 +22,19 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := s.config.GetConfig(req.ConfigID)
-	if cfg == nil {
+	target, err := s.profiles.Target(req.ConfigID)
+	if errors.Is(err, profiles.ErrNotFound) {
 		jsonError(w, "Конфигурация не найдена", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		jsonError(w, "Конфигурация не разбирается: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
 	routing := s.config.GetRouting()
 
-	if err := s.vpnManager.Connect(cfg, &routing); err != nil {
+	if err := s.vpnManager.Connect(target, &routing); err != nil {
 		jsonError(w, "Не удалось подключиться: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

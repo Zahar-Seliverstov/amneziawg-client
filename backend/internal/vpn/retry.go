@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // Пределы переподключения.
@@ -54,11 +55,11 @@ func isFatal(err error) bool {
 // считал байты, поэтому пропавший сервер, отозванный ключ или смена сети
 // оставляли состояние «Подключено» навсегда: маршруты стоят, трафик уходит в
 // никуда, и ни ошибки, ни попытки восстановиться.
-func (m *Manager) supervise(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) {
+func (m *Manager) supervise(ctx context.Context, engine tunnel.Engine, cfg tunnel.Config, routing *config.RoutingConfig) {
 	defer m.finish()
 
 	m.retryLoop(ctx, func(ctx context.Context) (bool, error) {
-		return m.runConnection(ctx, cfg, routing)
+		return m.runConnection(ctx, engine, cfg, routing)
 	})
 }
 

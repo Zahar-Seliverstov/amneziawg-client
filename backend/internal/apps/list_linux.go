@@ -13,6 +13,8 @@ package apps
 
 import (
 	"bufio"
+	"crypto/sha1"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -550,4 +552,12 @@ func usableIcon(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular() && info.Size() < 2<<20
+}
+
+// registerIcon выдаёт ключ для найденного службой пути к иконке.
+func registerIcon(path string) string {
+	sum := sha1.Sum([]byte(path))
+	key := hex.EncodeToString(sum[:8])
+	icons.Store(key, path)
+	return key
 }

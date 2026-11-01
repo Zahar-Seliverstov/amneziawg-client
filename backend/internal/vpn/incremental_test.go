@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/routing"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 func rule(t config.RuleType, value string) config.RoutingRule {
@@ -162,7 +163,7 @@ func TestDeltaKeepsLearnedRoutesOfSurvivingNames(t *testing.T) {
 		t.Fatal("удаление одного имени из двух потребовало пересборки")
 	}
 
-	m.applyRoutingDelta(&config.AmneziaWGConfig{}, now, delta)
+	m.applyRoutingDelta(&tunnel.Spec{}, now, delta)
 
 	if set.Len() != 1 {
 		t.Errorf("на учёте %d маршрутов, ожидался один", set.Len())
@@ -205,7 +206,7 @@ func TestDeltaAddsOnlyTheNewAddress(t *testing.T) {
 		t.Fatal("добавление подсети потребовало пересборки")
 	}
 
-	m.applyRoutingDelta(&config.AmneziaWGConfig{}, now, delta)
+	m.applyRoutingDelta(&tunnel.Spec{}, now, delta)
 
 	if got := ip.joinedAdded(); len(got) != 1 || got[0] != "10.0.0.0/8 dev awg0" {
 		t.Errorf("поставлено %v, ожидался только новый маршрут", got)
@@ -232,7 +233,7 @@ func TestDeltaKeepsAddressHeldByAnotherRule(t *testing.T) {
 	now := routingWith(config.RoutingModeVPNList, rule(config.RuleTypeCIDR, "1.1.1.1/32"))
 
 	delta, _ := planRoutingDelta(old, now)
-	m.applyRoutingDelta(&config.AmneziaWGConfig{}, now, delta)
+	m.applyRoutingDelta(&tunnel.Spec{}, now, delta)
 
 	if len(ip.deleted) != 0 {
 		t.Errorf("маршрут снят, хотя его держит второе правило: %v", ip.deleted)

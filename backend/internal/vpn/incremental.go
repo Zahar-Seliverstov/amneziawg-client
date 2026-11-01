@@ -19,6 +19,7 @@ import (
 
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/routing"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // routingDelta — что поменялось между двумя списками правил.
@@ -120,7 +121,7 @@ func (d routingDelta) empty() bool {
 
 // applyRoutingDelta правит маршрутизацию на живом туннеле, не трогая ни
 // посредника DNS, ни resolv.conf, ни устройство туннеля.
-func (m *Manager) applyRoutingDelta(cfg *config.AmneziaWGConfig, rc *config.RoutingConfig, delta routingDelta) {
+func (m *Manager) applyRoutingDelta(spec *tunnel.Spec, rc *config.RoutingConfig, delta routingDelta) {
 	m.routeMu.Lock()
 	defer m.routeMu.Unlock()
 
@@ -143,6 +144,9 @@ func (m *Manager) applyRoutingDelta(cfg *config.AmneziaWGConfig, rc *config.Rout
 				log.Printf("Снято маршрутов исчезнувших имён: %d", n)
 			}
 		}
+		// Новое имя могло уже лежать в кэше системы — тогда его ответ
+		// прошёл бы мимо посредника, и маршрут для него не встал бы.
+		m.flushDNSCache()
 	}
 
 	// Снимаем раньше, чем ставим: правило могли удалить и тут же добавить
@@ -155,9 +159,9 @@ func (m *Manager) applyRoutingDelta(cfg *config.AmneziaWGConfig, rc *config.Rout
 	if len(delta.added) > 0 {
 		// Спрашиваем только новые имена: остальные уже разрешены, и их
 		// маршруты стоят.
-		resolver := resolverFor(parseDNSServers(cfg.Interface.DNS))
-		m.installRuleRoutes(rc.Mode, m.resolveRules(delta.added, resolver, hasIPv6Address(cfg.Interface.Address)))
+		resolver := resolverFor(parseDNSServers(spec.DNS))
+		m.installRuleRoutes(rc.Mode, m.resolveRules(delta.added, resolver, hasIPv6Address(spec.Addresses)))
 	}
 
-	m.syncApps(cfg, rc)
+	m.syncApps(spec, rc)
 }

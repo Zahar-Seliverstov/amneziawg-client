@@ -46,8 +46,6 @@ const (
 	nftAppsTable = "awg_client_apps"
 )
 
-var ourPrefs = []string{prefTunnelMark, prefAppsMark, prefSuppress, prefTable}
-
 type linuxPolicy struct {
 	mu sync.Mutex
 
@@ -168,7 +166,9 @@ func (p *linuxPolicy) removeRules(prefs ...string) {
 	}
 }
 
-func (p *linuxPolicy) SetApps(names appSet, viaTunnel bool, ifname string, v6 bool) error {
+func (p *linuxPolicy) SetApps(req appRequest) error {
+	names, viaTunnel, ifname, v6 := req.apps, req.viaTunnel, req.ifname, req.v6()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

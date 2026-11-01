@@ -6,8 +6,7 @@ import (
 	"testing"
 
 	"github.com/user/amnezia-web-client/internal/iproute"
-
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // Регрессия. Адрес сервера спрашивается у системного резолвера, а пересборка
@@ -24,9 +23,9 @@ func TestEndpointAddressIsRememberedForTheConnection(t *testing.T) {
 	m := managerWith(ip)
 
 	// Имя заведомо неразрешимое: .invalid зарезервирован ровно для этого.
-	cfg := &config.AmneziaWGConfig{
-		Interface: config.InterfaceConfig{Address: []string{"10.8.1.18/32"}},
-		Peers:     []config.PeerConfig{{Endpoint: "сервера-нет.invalid:51820"}},
+	cfg := &tunnel.Spec{
+		Addresses: []string{"10.8.1.18/32"},
+		Endpoints: []string{"сервера-нет.invalid:51820"},
 	}
 
 	// Ровно то, что случается при подключении: адрес выяснен и запомнен.
@@ -52,9 +51,9 @@ func TestLiteralEndpointIsNotResolved(t *testing.T) {
 	}
 	m := managerWith(ip)
 
-	cfg := &config.AmneziaWGConfig{
-		Interface: config.InterfaceConfig{Address: []string{"10.8.1.18/32"}},
-		Peers:     []config.PeerConfig{{Endpoint: "203.0.113.10:51820"}},
+	cfg := &tunnel.Spec{
+		Addresses: []string{"10.8.1.18/32"},
+		Endpoints: []string{"203.0.113.10:51820"},
 	}
 
 	if err := m.setupDefaultVPNRoute(cfg); err != nil {

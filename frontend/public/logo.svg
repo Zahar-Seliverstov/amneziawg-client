@@ -1,20 +1,7 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-<!-- Норка: вход в туннель, из темноты смотрят двое. -->
-<defs>
-<linearGradient id="bg" x1="0" y1="16" x2="0" y2="496" gradientUnits="userSpaceOnUse">
-<stop stop-color="#1d2026"/>
-<stop offset="1" stop-color="#0f1013"/>
-</linearGradient>
-<radialGradient id="glow" cx="256" cy="322" r="90" gradientUnits="userSpaceOnUse">
-<stop stop-color="#3fbf74" stop-opacity="0.28"/>
-<stop offset="1" stop-color="#3fbf74" stop-opacity="0"/>
-</radialGradient>
-</defs>
-<rect x="16" y="16" width="480" height="480" rx="120" fill="url(#bg)"/>
-<path d="M150 400V270a106 106 0 0 1 212 0v130z" fill="#050608"/>
-<path d="M150 400V270a106 106 0 0 1 212 0v130z" fill="url(#glow)"/>
-<path d="M150 400V270a106 106 0 0 1 212 0v130" stroke="#e9eaed" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M100 400h312" stroke="#e9eaed" stroke-width="28" stroke-linecap="round"/>
-<ellipse cx="224" cy="318" rx="17" ry="22" fill="#3fbf74"/>
-<ellipse cx="288" cy="318" rx="17" ry="22" fill="#3fbf74"/>
+<!-- Вход в туннель и свет в нём. Те же цвета, что у интерфейса: zinc-900 и
+     зелёная точка состояния «подключено». -->
+<rect width="512" height="512" rx="116" fill="#18181b"/>
+<path d="M152 372V264a104 104 0 0 1 208 0v108" stroke="#fafafa" stroke-width="44" stroke-linecap="round"/>
+<circle cx="256" cy="300" r="30" fill="#22c55e"/>
 </svg>

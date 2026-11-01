@@ -2,54 +2,63 @@
   <div class="app">
     <header class="top">
       <span class="top__name">AWG Client</span>
-      <span class="faint mono">{{ version }}</span>
       <span class="grow"></span>
-      <nav class="tabs" aria-label="Разделы">
-        <button class="tab" :class="{ 'tab--on': page === 'routing' }" @click="page = 'routing'">Маршрутизация</button>
-        <button class="tab" :class="{ 'tab--on': page === 'settings' }" title="Клавиша ," @click="page = 'settings'">Настройки</button>
-      </nav>
+      <span v-if="pending" class="top__pending" role="status">
+        <LoaderCircle class="spin" aria-hidden="true" />Применяется…
+      </span>
+      <button
+        class="btn btn--ghost btn--icon"
+        :class="{ 'btn--on': page === 'settings' }"
+        :aria-pressed="page === 'settings'"
+        aria-label="Настройки"
+        title="Настройки · клавиша ,"
+        @click="toggle()"
+      >
+        <Settings aria-hidden="true" />
+      </button>
     </header>
 
-    <StatusBar
-      :status="status"
-      :configs-count="configs.length"
-      :selected="selected"
-      :active-name="activeName"
-      :offline="offline"
-      @toggle="togglePower"
-    />
-
-    <div class="cols">
-      <aside class="side">
-        <ConfigList :configs="configs" :selected-id="selectedId" :status="status" @select="selectConfig" @changed="load" />
-      </aside>
-
-      <main class="main">
-        <RoutingPanel v-show="page === 'routing'" />
-        <SettingsPanel v-if="page === 'settings'" />
-      </main>
-    </div>
+    <main class="page">
+      <ConnectionCard
+        v-if="page === 'main'"
+        :status="status"
+        :offline="offline"
+        :configs="configs"
+        :protocols="protocols"
+        :selected-id="selectedId"
+        :active-name="activeName"
+        @toggle="togglePower"
+        @select="selectConfig"
+        @changed="load"
+      />
+      <!-- Маршрутизация не размонтируется при уходе в настройки: набранное
+           в поле правил и свёрнутые группы должны дождаться возвращения. -->
+      <RoutingPanel v-show="page === 'main'" />
+      <SettingsPanel v-if="page === 'settings'" :version="version" @back="open('main')" />
+    </main>
 
     <ToastStack />
   </div>
 </template>
 
 <script setup lang="ts">
-// Главный экран: строка состояния, подключения слева, раздел справа.
+// Главный экран: соединение сверху, правила под ним; настройки —
+// отдельным экраном.
 //
-// Здесь только то, что нужно двум местам сразу: список подключений и
-// выбранное из них — и строке состояния, и списку. Остальное живёт в
-// хранилищах (stores/) и в самих разделах.
+// Здесь только то, что нужно нескольким местам сразу: список подключений и
+// выбранное из них. Остальное живёт в хранилищах (stores/) и в разделах.
+import { LoaderCircle, Settings } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from './api/client'
-import StatusBar from './components/StatusBar.vue'
 import ToastStack from './components/ToastStack.vue'
-import ConfigList from './components/configs/ConfigList.vue'
+import ConnectionCard from './components/connection/ConnectionCard.vue'
 import RoutingPanel from './components/routing/RoutingPanel.vue'
 import SettingsPanel from './components/settings/SettingsPanel.vue'
 import { useConfigs } from './composables/useConfigs'
 import { useConnectionView } from './composables/useConnectionView'
+import { usePage } from './composables/usePage'
 import { useVpnStatus } from './composables/useVpnStatus'
+import { useRouting } from './stores/routing'
 import { notify, notifyError } from './stores/toasts'
 
 const { status, error: streamError } = useVpnStatus()
@@ -57,10 +66,11 @@ const { status, error: streamError } = useVpnStatus()
 // Поток статуса оборван — служба остановлена или перезапускается.
 const offline = computed(() => streamError.value !== null)
 
-const { configs, selectedId, selected, activeName, load, select, follow } = useConfigs(() => status.value)
+const { configs, protocols, selectedId, activeName, load, select, follow } = useConfigs(() => status.value)
 const { isLive } = useConnectionView(() => status.value, () => Boolean(selectedId.value))
+const { page, open, toggle } = usePage()
+const { pending } = useRouting()
 
-const page = ref<'routing' | 'settings'>('routing')
 const version = ref('')
 
 async function togglePower() {
@@ -89,13 +99,14 @@ watch(() => status.value?.routing_error, (reason, was) => {
   if (reason && reason !== was) notify(`Правила не применились: ${reason}`)
 })
 
-// Горячие клавиши вне полей ввода: «,» — настройки, «c» — подключить или
-// отключить, Esc — назад к маршрутизации.
+// Горячие клавиши вне полей ввода и окон: «,» — настройки, «c» — подключить
+// или отключить, Esc — назад к главному экрану. В открытом окне (форма
+// подключения, выбор программы) буква «c» — не команда.
 function onKey(e: KeyboardEvent) {
-  if (e.ctrlKey || e.metaKey || e.altKey) return
-  if ((e.target as HTMLElement).closest('input, textarea, [contenteditable]')) return
-  if (e.key === ',') page.value = page.value === 'settings' ? 'routing' : 'settings'
-  else if (e.key === 'Escape') page.value = 'routing'
+  if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return
+  if ((e.target as HTMLElement).closest('input, textarea, [contenteditable], dialog, [role="dialog"]')) return
+  if (e.key === ',') toggle()
+  else if (e.key === 'Escape') open('main')
   else if ((e.key === 'c' || e.key === 'с') && !offline.value) togglePower()
 }
 
@@ -112,82 +123,60 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 <style scoped>
 .app {
-  display: grid;
-  grid-template-rows: auto auto 1fr;
   min-height: 100vh;
-  max-width: 1280px;
-  margin: 0 auto;
-  border-inline: 1px solid var(--line);
-  background: var(--panel);
 }
 
 .top {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 44px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  max-width: 720px;
+  height: 56px;
+  margin: 0 auto;
+  padding: 0 24px;
+  background: var(--bg);
 }
 
 .top__name {
-  font-weight: 700;
-}
-
-.tabs {
-  display: flex;
-  align-self: stretch;
-}
-
-.tab {
-  padding: 0 12px;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-}
-
-.tab:hover {
-  color: var(--text);
-}
-
-.tab--on {
-  border-bottom-color: var(--accent);
-  color: var(--text);
   font-weight: 600;
 }
 
-.cols {
+.top__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.top__pending svg {
+  width: 14px;
+  height: 14px;
+}
+
+.top .btn--icon {
+  margin-right: -6px;
+}
+
+.page {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  min-height: 0;
+  gap: 40px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px 24px 64px;
 }
 
-.side {
-  border-right: 1px solid var(--line);
-  padding: 16px;
-  min-width: 0;
-}
-
-.main {
-  padding: 16px 24px;
-  min-width: 0;
-}
-
-@media (max-width: 760px) {
-  .app {
-    border: 0;
+@media (max-width: 640px) {
+  .top {
+    padding: 0 16px;
   }
 
-  .cols {
-    grid-template-columns: 1fr;
-  }
-
-  .side {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .main {
-    padding: 14px 16px;
+  .page {
+    gap: 32px;
+    padding: 8px 16px 48px;
   }
 }
 </style>

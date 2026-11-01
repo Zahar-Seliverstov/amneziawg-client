@@ -2,11 +2,9 @@ package vpn
 
 // Серверы имён на Windows.
 //
-// Здесь не нужно ни подменять файлов, ни откатывать: серверы имён на Windows
-// принадлежат интерфейсу. Они прописываются туннелю, а выбирает их система
-// потому, что у туннеля наименьшая метрика (см. iproute.LinkUp). Вместе с
-// интерфейсом исчезают и они — поэтому аварийное завершение тоже ничего за
-// собой не оставляет.
+// Серверы имён принадлежат интерфейсу: они прописываются туннелю и исчезают
+// вместе с ним. Чтобы система спрашивала только их, а не все адаптеры
+// наперегонки, рядом ставится правило NRPT (nrpt_windows.go).
 
 import (
 	"errors"
@@ -68,6 +66,17 @@ func (d *dnsControl) Apply(ifname string, servers []string) error {
 	}
 
 	d.ifname = ifname
+
+	all := append(append([]netip.Addr(nil), v4...), v6...)
+	names := make([]string, len(all))
+	for i, a := range all {
+		names[i] = a.String()
+	}
+	if err := setNRPT(names); err != nil {
+		// Без правила DNS работает, но наперегонки с роутером — правила по
+		// именам станут ненадёжными. Соединение из-за этого не рвём.
+		log.Printf("Внимание: %v — правила по именам могут срабатывать не всегда", err)
+	}
 	return nil
 }
 
@@ -79,6 +88,9 @@ func (d *dnsControl) Restore() {
 
 	if d.ifname == "" {
 		return
+	}
+	if err := removeNRPT(); err != nil {
+		log.Printf("Не удалось снять правило DNS: %v", err)
 	}
 	ifname := d.ifname
 	d.ifname = ""
@@ -94,9 +106,14 @@ func (d *dnsControl) Restore() {
 	}
 }
 
-// restoreOrphanedDNS на Windows не нужна: серверы имён исчезают вместе с
-// интерфейсом туннеля, а он — вместе с процессом.
-func restoreOrphanedDNS() {}
+// restoreOrphanedDNS снимает правило NRPT, оставшееся от аварийно
+// завершённого запуска: оно указывает на адрес исчезнувшего туннеля и
+// оставило бы систему без DNS.
+func restoreOrphanedDNS() {
+	if err := removeNRPT(); err != nil {
+		log.Printf("Не удалось снять оставшееся правило DNS: %v", err)
+	}
+}
 
 // tunnelLUID находит интерфейс туннеля по имени.
 func tunnelLUID(ifname string) (winipcfg.LUID, error) {

@@ -103,24 +103,6 @@ func TestRoutingConfigCloneIsIndependent(t *testing.T) {
 	}
 }
 
-func TestAmneziaConfigCloneIsIndependent(t *testing.T) {
-	original := AmneziaWGConfig{
-		Interface: InterfaceConfig{Address: []string{"10.8.0.2/32"}, DNS: []string{"10.8.0.1"}},
-		Peers:     []PeerConfig{{AllowedIPs: []string{"0.0.0.0/0"}}},
-	}
-
-	clone := original.Clone()
-	clone.Interface.Address[0] = "192.0.2.1/32"
-	clone.Interface.DNS[0] = "8.8.8.8"
-	clone.Peers[0].AllowedIPs[0] = "192.0.2.0/24"
-
-	if original.Interface.Address[0] != "10.8.0.2/32" ||
-		original.Interface.DNS[0] != "10.8.0.1" ||
-		original.Peers[0].AllowedIPs[0] != "0.0.0.0/0" {
-		t.Error("копия делит массивы с оригиналом")
-	}
-}
-
 func TestParseRuleValuePrefixes(t *testing.T) {
 	cases := []struct {
 		in, typ, value string

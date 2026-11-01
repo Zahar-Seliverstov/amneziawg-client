@@ -6,10 +6,14 @@ package vpn
 // Частности лежат рядом и в этот порядок только вставляются: состояние и
 // оповещения — status.go, политика повторов — retry.go, наблюдение за живым
 // туннелем — watch.go, адреса интерфейса — link.go, маршруты и серверы имён —
-// routes.go, конфигурация ядра — uapi.go.
+// routes.go.
+//
+// Протоколов менеджер не знает: интерфейс поднимает ядро (tunnel.Engine), а
+// всё, что нужно системному слою, приходит сводкой tunnel.Spec.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -17,26 +21,44 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
-	"github.com/amnezia-vpn/amneziawg-go/v3/device"
-	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
 	"github.com/user/amnezia-web-client/internal/iproute"
 	"github.com/user/amnezia-web-client/internal/routing"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
+
+// DefaultInterface — имя интерфейса туннеля, которое просит менеджер.
+const DefaultInterface = "awg0"
+
+// Engines выбирает ядро для конфигурации; см. tunnel.Registry.
+type Engines interface {
+	Engine(tunnel.Config) (tunnel.Engine, error)
+}
+
+// Target — что подключить: сохранённая конфигурация, уже разобранная
+// протоколом.
+type Target struct {
+	ID     string
+	Name   string
+	Config tunnel.Config
+}
 
 // Manager manages VPN connections
 type Manager struct {
 	mu sync.RWMutex
 
 	status        ConnectionStatus
-	activeConfig  *config.AmneziaWGConfig
 	routingConfig *config.RoutingConfig
 
-	// Туннель работает внутри этого же процесса: ядро amneziawg-go
-	// подключено библиотекой, а не запущено отдельным бинарником.
-	dev    *device.Device
+	// active — сводка подключённой конфигурации; nil — соединения нет.
+	active *tunnel.Spec
+
+	// engines — ядра, которыми поднимаются туннели.
+	engines Engines
+
+	// dev — запущенный туннель текущей попытки.
+	dev    tunnel.Device
 	cancel context.CancelFunc
 
 	// done закрывается, когда горутина соединения полностью завершилась.
@@ -106,6 +128,10 @@ type Manager struct {
 	// dns подменяет системные серверы имён на время соединения.
 	dns dnsControl
 
+	// flushDNS сбрасывает кэш системного резолвера. Поле, а не прямой вызов:
+	// тесты не должны трогать кэш машины, на которой идут. nil — не нужно.
+	flushDNS func()
+
 	// ip — команда iproute2 за интерфейсом: адреса, маршруты и опрос таблицы
 	// маршрутизации. Поле, а не прямые вызовы exec, — иначе решения о
 	// маршрутах можно было бы проверить только от root на живой машине.
@@ -134,15 +160,21 @@ type Manager struct {
 	// правила для программ (policy.go). nil — её нет (Windows, тесты), и
 	// маршруты ложатся в общую таблицу.
 	policy policyRouter
+
+	// apps — правила для программ (approuter.go). nil — система их не
+	// умеет, и такие правила не действуют.
+	apps appRouter
 }
 
-// NewManager creates a new VPN manager
-func NewManager() *Manager {
+// NewManager создаёт менеджер соединения.
+func NewManager(engines Engines) *Manager {
 	m := &Manager{
 		status: ConnectionStatus{
 			State: StateDisconnected,
 		},
-		interfaceName:   "awg0",
+		engines:         engines,
+		flushDNS:        flushDNSCache,
+		interfaceName:   DefaultInterface,
 		ip:              iproute.New(),
 		statusCallbacks: []StatusCallback{},
 		notify:          make(chan ConnectionStatus, statusQueue),
@@ -158,6 +190,7 @@ func NewManager() *Manager {
 		log.Printf("ВНИМАНИЕ: %v. Подключение работать не будет", err)
 	} else {
 		m.policy = newPolicyRouter()
+		m.apps = newAppRouter(m.policy)
 	}
 
 	// Прошлый запуск мог не пережить SIGKILL и оставить систему с чужим
@@ -181,7 +214,13 @@ func (m *Manager) ifname() string {
 // Если туннель уже поднят на другом конфиге, это переключение: текущее
 // соединение разбирается и дожидается полной остановки, после чего
 // поднимается новое. Отдельно нажимать «отключить» не нужно.
-func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) error {
+func (m *Manager) Connect(target Target, routing *config.RoutingConfig) error {
+	engine, err := m.engines.Engine(target.Config)
+	if err != nil {
+		return err
+	}
+	spec := target.Config.Spec()
+
 	m.connectMu.Lock()
 	defer m.connectMu.Unlock()
 
@@ -192,7 +231,7 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 	// Уже подключены, подключаемся или переподключаемся к нему же — делать
 	// нечего. Переподключение считается тем же соединением: прерывать его
 	// ради того же самого конфига значит начинать всё сначала без причины.
-	if current == cfg.ID && (state == StateConnected || state == StateConnecting || state == StateReconnecting) {
+	if current == target.ID && (state == StateConnected || state == StateConnecting || state == StateReconnecting) {
 		return nil
 	}
 
@@ -201,12 +240,12 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 	m.mu.Lock()
 	m.status = ConnectionStatus{
 		State:      StateConnecting,
-		ConfigID:   cfg.ID,
-		ConfigName: cfg.Name,
+		ConfigID:   target.ID,
+		ConfigName: target.Name,
 		Interface:  m.interfaceName,
 		Attempt:    1,
 	}
-	m.activeConfig = cfg
+	m.active = &spec
 	m.routingConfig = routing
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,7 +257,7 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 
 	go func() {
 		defer close(done)
-		m.supervise(ctx, cfg, routing)
+		m.supervise(ctx, engine, target.Config, routing)
 	}()
 
 	return nil
@@ -227,17 +266,7 @@ func (m *Manager) Connect(cfg *config.AmneziaWGConfig, routing *config.RoutingCo
 // runConnection поднимает туннель и держит его, пока он жив. Возвращает
 // признак того, что рукопожатие состоялось, и причину, по которой всё
 // закончилось.
-//
-// Ядро amneziawg-go работает внутри этого процесса: TUN создаётся напрямую,
-// устройство настраивается вызовом IpcSet. Отдельного бинарника, unix-сокета
-// и разбора чужого лога больше нет — вместе с ними ушли и их отказы
-// (протухший сокет, «интерфейс занят», гонка при старте).
-//
-// Устройство создаётся заново на каждую попытку, а не переиспользуется:
-// сокет ядра привязан к маршруту, который был при его создании, и после
-// смены сети (Wi-Fi на кабель, новая точка доступа) продолжает слать пакеты
-// в исчезнувший путь.
-func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) (bool, error) {
+func (m *Manager) runConnection(ctx context.Context, engine tunnel.Engine, cfg tunnel.Config, routing *config.RoutingConfig) (bool, error) {
 	// Без iproute2 дальше идти незачем: интерфейс создастся, но ни адреса,
 	// ни маршруты на него не лягут. Повторять нечего — команда в системе не
 	// появится сама.
@@ -254,44 +283,31 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 	// исчезает вместе с устройством, и маршруты на него ведут в пустоту.
 	defer m.releaseSystem()
 
-	mtu := cfg.Interface.MTU
-	if mtu <= 0 {
-		mtu = device.DefaultMTU
+	opts := tunnel.Options{Interface: m.ifname(), Logf: log.Printf}
+	// Метка на зашифрованных пакетах самого туннеля: по ней они идут
+	// системной таблицей, а не в наш маршрут по умолчанию (policy.go).
+	if m.policy != nil {
+		opts.FirewallMark = m.policy.TunnelMark()
 	}
 
-	ifname := m.ifname()
-
-	tunDev, err := tun.CreateTUN(ifname, mtu)
+	dev, err := engine.Start(cfg, opts)
 	if err != nil {
-		return false, fmt.Errorf("не удалось создать интерфейс %s: %w", ifname, err)
+		if errors.Is(err, tunnel.ErrRejected) {
+			return false, fatalError{err}
+		}
+		return false, err
 	}
 
-	// Ядро может выдать имя, отличное от запрошенного. Дальше по коду ходит
+	// Ядро вправе выдать имя, отличное от запрошенного. Дальше по коду ходит
 	// именно оно, иначе маршруты лягут не на тот интерфейс.
-	if name, err := tunDev.Name(); err == nil && name != "" {
-		m.mu.Lock()
-		m.interfaceName = name
-		m.status.Interface = name
-		m.mu.Unlock()
-	}
-
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), m.deviceLogger())
-
 	m.mu.Lock()
 	m.dev = dev
+	m.interfaceName = dev.Name()
+	m.status.Interface = dev.Name()
 	m.mu.Unlock()
 
-	// Тот же самый текст UAPI, что раньше уходил в сокет.
-	if err := dev.IpcSet(m.buildUAPIConfig(cfg)); err != nil {
-		// Повторять нечего: ядро отвергает не сеть, а сами параметры.
-		return false, fatalError{fmt.Errorf("ядро отвергло конфигурацию: %w", err)}
-	}
-
-	if err := dev.Up(); err != nil {
-		return false, fmt.Errorf("не удалось поднять туннель: %w", err)
-	}
-
-	if err := m.configureLink(cfg); err != nil {
+	spec := cfg.Spec()
+	if err := m.configureLink(&spec); err != nil {
 		return false, fmt.Errorf("не удалось настроить интерфейс: %w", err)
 	}
 
@@ -303,17 +319,7 @@ func (m *Manager) runConnection(ctx context.Context, cfg *config.AmneziaWGConfig
 	// подменяет системный DNS, и закрытие устройства не останавливает его
 	// мгновенно: успей он сделать это после уборки — записи остались бы в
 	// системе, уводя трафик в исчезнувший интерфейс.
-	return m.watchDevice(ctx, dev, cfg, routing)
-}
-
-// deviceLogger направляет журнал ядра в общий лог приложения. Штатный
-// device.NewLogger пишет напрямую в stdout мимо log, из-за чего строки шли
-// без нашего префикса и вперемешку по времени.
-func (m *Manager) deviceLogger() *device.Logger {
-	return &device.Logger{
-		Verbosef: func(format string, args ...any) { log.Printf("[awg] "+format, args...) },
-		Errorf:   func(format string, args ...any) { log.Printf("[awg] ERROR "+format, args...) },
-	}
+	return m.watchDevice(ctx, dev, &spec, routing)
 }
 
 // Disconnect stops the VPN connection
@@ -355,7 +361,7 @@ func (m *Manager) teardown() {
 	// и итог у него один: «Отключено».
 	m.mu.Lock()
 	m.status = ConnectionStatus{State: StateDisconnected}
-	m.activeConfig = nil
+	m.active = nil
 	m.routingConfig = nil
 	m.cancel, m.done = nil, nil
 	m.mu.Unlock()
@@ -396,7 +402,9 @@ func (m *Manager) releaseSystem() {
 	m.mu.Unlock()
 
 	if dev != nil {
-		dev.Close()
+		if err := dev.Close(); err != nil {
+			log.Printf("Туннель закрыт с ошибкой: %v", err)
+		}
 	}
 }
 
@@ -415,9 +423,16 @@ func (m *Manager) finish() {
 		m.status.Error = prevErr
 	}
 
-	m.activeConfig = nil
+	m.active = nil
 	m.routingConfig = nil
 	m.mu.Unlock()
 
 	m.notifyStatusChange()
+}
+
+// CleanupSystem убирает из системы то, что могло остаться от аварийно
+// завершённой службы: подменённые серверы имён. Вызывается при удалении
+// службы — после него перезапуска, который убрал бы это сам, уже не будет.
+func CleanupSystem() {
+	restoreOrphanedDNS()
 }

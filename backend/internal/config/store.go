@@ -17,7 +17,7 @@ import (
 // оставляет полуприменённых данных, если файл окажется битым, а копировать
 // AppConfig нельзя — в нём мьютекс.
 type appState struct {
-	Configs []AmneziaWGConfig `json:"configs"`
+	Configs []Profile `json:"configs"`
 	// SelectedConfigID — конфиг, выбранный пользователем на главном экране.
 	// Именно к нему подключается автоподключение при запуске.
 	SelectedConfigID string        `json:"selected_config_id,omitempty"`
@@ -51,7 +51,7 @@ func NewAppConfig(configPath string) *AppConfig {
 	return &AppConfig{
 		configPath: configPath,
 		state: appState{
-			Configs: []AmneziaWGConfig{},
+			Configs: []Profile{},
 			Routing: RoutingConfig{
 				Mode:  RoutingModeVPNList,
 				Rules: []RoutingRule{},
@@ -86,7 +86,6 @@ func (c *AppConfig) Load() error {
 		return c.quarantine(err)
 	}
 
-	reparseConfigs(loaded.Configs)
 	sanitizeRouting(&loaded.Routing)
 
 	c.mu.Lock()
@@ -110,32 +109,6 @@ func (c *AppConfig) quarantine(cause error) error {
 
 	log.Printf("Файл настроек повреждён (%v). Он сохранён как %s, приложение запущено с настройками по умолчанию", cause, backup)
 	return nil
-}
-
-// reparseConfigs заново разбирает сохранённые конфиги из исходного текста.
-//
-// На диск кладётся уже разобранная структура, поэтому конфиг, добавленный
-// старой версией, навсегда остался бы без полей, которых та версия не знала
-// (например, параметров AmneziaWG v2). Перечитывание из raw_config подтягивает
-// их без ручного пересоздания конфига.
-func reparseConfigs(configs []AmneziaWGConfig) {
-	for i := range configs {
-		raw := configs[i].RawConfig
-		if raw == "" {
-			continue
-		}
-
-		reparsed, err := ParseAmneziaConfig(configs[i].Name, raw)
-		if err != nil {
-			log.Printf("Конфигурацию %q не удалось перечитать, оставляем как есть: %v", configs[i].Name, err)
-			continue
-		}
-
-		// Идентификаторы и дату создания сохраняем.
-		reparsed.ID = configs[i].ID
-		reparsed.CreatedAt = configs[i].CreatedAt
-		configs[i] = *reparsed
-	}
 }
 
 // sanitizeRouting приводит прочитанные с диска правила к пригодному виду.
@@ -262,21 +235,21 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// AddConfig adds a new WireGuard config
-func (c *AppConfig) AddConfig(cfg AmneziaWGConfig) {
+// AddConfig добавляет конфигурацию.
+func (c *AppConfig) AddConfig(p Profile) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.Configs = append(c.state.Configs, cfg.Clone())
+	c.state.Configs = append(c.state.Configs, p)
 }
 
-// GetConfig returns a config by ID
-func (c *AppConfig) GetConfig(id string) *AmneziaWGConfig {
+// GetConfig возвращает копию конфигурации по идентификатору.
+func (c *AppConfig) GetConfig(id string) *Profile {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	for i := range c.state.Configs {
 		if c.state.Configs[i].ID == id {
-			found := c.state.Configs[i].Clone()
+			found := c.state.Configs[i]
 			return &found
 		}
 	}
@@ -284,7 +257,7 @@ func (c *AppConfig) GetConfig(id string) *AmneziaWGConfig {
 }
 
 // UpdateConfig заменяет конфиг по ID, сохраняя идентификатор и дату создания.
-func (c *AppConfig) UpdateConfig(id string, cfg AmneziaWGConfig) bool {
+func (c *AppConfig) UpdateConfig(id string, p Profile) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -293,7 +266,7 @@ func (c *AppConfig) UpdateConfig(id string, cfg AmneziaWGConfig) bool {
 			continue
 		}
 
-		updated := cfg.Clone()
+		updated := p
 		updated.ID = id
 		updated.CreatedAt = c.state.Configs[i].CreatedAt
 		c.state.Configs[i] = updated
@@ -349,15 +322,10 @@ func (c *AppConfig) UniqueConfigName(name, excludeID string) string {
 }
 
 // GetAllConfigs возвращает независимую копию списка конфигураций.
-func (c *AppConfig) GetAllConfigs() []AmneziaWGConfig {
+func (c *AppConfig) GetAllConfigs() []Profile {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	out := make([]AmneziaWGConfig, len(c.state.Configs))
-	for i, cfg := range c.state.Configs {
-		out[i] = cfg.Clone()
-	}
-	return out
+	return append([]Profile(nil), c.state.Configs...)
 }
 
 // SetSelectedConfig запоминает конфиг, выбранный на главном экране.

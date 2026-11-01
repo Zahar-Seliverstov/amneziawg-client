@@ -7,11 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // Тайминги ожидания рукопожатия и опроса счётчиков.
@@ -19,11 +18,11 @@ const (
 	statsInterval = 3 * time.Second
 
 	// graceWithoutRoutes — сколько ждём рукопожатия, НЕ трогая маршрутизацию,
-	// когда у пира нет PersistentKeepalive. Такой пир начинает рукопожатие
-	// только когда через туннель пойдёт трафик, а трафик пойдёт лишь по
-	// маршрутам — иначе соединение не поднимется никогда.
+	// когда ядро не начинает обмен само (Spec.SelfStarting ложно). Такой
+	// туннель начинает рукопожатие, только когда в него пойдёт трафик, а
+	// трафик пойдёт лишь по маршрутам — иначе соединение не поднимется никогда.
 	//
-	// Если keepalive задан, этот запас НЕ применяется: ядро шлёт первый
+	// Если ядро начинает само, этот запас НЕ применяется: оно шлёт первый
 	// пакет само, живой сервер отвечает за секунду, и ставить маршруты до
 	// рукопожатия незачем. Ровно это однажды и увело весь трафик в
 	// неподнятый туннель — интернет пропадал до самого отключения.
@@ -37,7 +36,7 @@ const (
 // ждёт рукопожатия, включает маршрутизацию, а дальше следит, что туннель жив.
 //
 // Возвращает признак состоявшегося рукопожатия и причину завершения.
-func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *config.AmneziaWGConfig, routing *config.RoutingConfig) (bool, error) {
+func (m *Manager) watchDevice(ctx context.Context, dev tunnel.Device, spec *tunnel.Spec, routing *config.RoutingConfig) (bool, error) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -46,9 +45,10 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 	established := false
 	lastNotify := time.Time{}
 
-	// Пир с keepalive обязан рукопожаться сам. Молчит — значит соединения
-	// нет, и трогать маршрутизацию нельзя ни при каких обстоятельствах.
-	waitsForTraffic := !hasKeepalive(cfg)
+	// Ядро, начинающее обмен само, обязано рукопожаться без нашей помощи.
+	// Молчит — значит соединения нет, и трогать маршрутизацию нельзя ни при
+	// каких обстоятельствах.
+	waitsForTraffic := !spec.SelfStarting
 
 	// Маршруты ставим один раз, дальше только следим.
 	bringUpTraffic := func() error {
@@ -66,7 +66,7 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 			}
 			m.mu.RUnlock()
 
-			if err := m.configureTraffic(cfg, routing); err != nil {
+			if err := m.configureTraffic(spec, routing); err != nil {
 				return fmt.Errorf("не удалось настроить маршрутизацию: %w", err)
 			}
 
@@ -85,16 +85,15 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 		select {
 		case <-ctx.Done():
 			return established, nil
-		case <-dev.Wait():
+		case <-dev.Done():
 			return established, errors.New("ядро закрыло туннель")
 		case <-ticker.C:
 		}
 
-		state, err := dev.IpcGet()
+		stats, err := dev.Stats()
 		if err != nil {
 			continue
 		}
-		stats := parseDeviceStats(state)
 
 		if !established {
 			if stats.LastHandshake.IsZero() {
@@ -159,15 +158,4 @@ func (m *Manager) watchDevice(ctx context.Context, dev *device.Device, cfg *conf
 			m.notifyStatusChange()
 		}
 	}
-}
-
-// hasKeepalive сообщает, задан ли хотя бы у одного пира PersistentKeepalive.
-// Значение бывает диапазоном ("25-35"), поэтому смотрим и исходную строку.
-func hasKeepalive(cfg *config.AmneziaWGConfig) bool {
-	for _, peer := range cfg.Peers {
-		if peer.PersistentKeepalive > 0 || strings.TrimSpace(peer.PersistentKeepaliveRaw) != "" {
-			return true
-		}
-	}
-	return false
 }

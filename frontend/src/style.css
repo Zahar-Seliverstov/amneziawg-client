@@ -1,59 +1,56 @@
-/* Минималистичный интерфейс в духе инструментов разработчика: один
-   моноширинный шрифт, тонкие рамки, никаких теней и анимаций движения.
-   Отклик — мгновенная смена цвета, а не плавные переходы. */
+/* Нейтральный минимализм: один шрифт (Inter), серая шкала zinc, ни теней,
+   ни рамок у блоков. Иерархия — размером и насыщенностью шрифта, разделение —
+   пространством. Цвет появляется только в точке состояния соединения и в
+   тексте ошибки, поэтому он сразу заметен.
+
+   Тема выбирается атрибутом data-theme на <html> (см. composables/useTheme):
+   «как в системе» разрешается в светлую или тёмную там же, поэтому здесь
+   нет второго набора переменных под prefers-color-scheme. */
 
 :root {
-  --bg: #0d1014;
-  --panel: #12161b;
-  --raise: #181d24;
-  --line: #242a33;
-  --line-strong: #323a46;
-  --text: #d5dae1;
-  --muted: #8a93a0;
-  --faint: #5c6573;
-  --accent: #5aa9ff;
-  --ok: #3fb950;
-  --warn: #d29922;
-  --bad: #f2564b;
-  --sel: rgba(90, 169, 255, 0.12);
+  --bg: #ffffff;
+  --surface: #f4f4f5;
+  --surface-hover: #e4e4e7;
+  /* Поле в фокусе: заметно, но без линий. */
+  --field-focus: #ebebed;
+  --line: #e4e4e7;
+  --text: #18181b;
+  --muted: #71717a;
+  --faint: #a1a1aa;
+  --error: #dc2626;
+  --backdrop: rgba(9, 9, 11, 0.4);
 
-  /* Группы правил: у каждой свой цвет метки, чтобы список читался
-     с одного взгляда. */
-  --g-app: #c586f7;
-  --g-set: #e3a33b;
-  --g-name: #5aa9ff;
-  --g-addr: #3fb9a8;
+  /* Точка состояния — единственное цветное пятно на экране. */
+  --dot-on: #22c55e;
+  --dot-busy: #f59e0b;
+  --dot-bad: #ef4444;
+  --dot-off: #a1a1aa;
+  --switch-off: #d4d4d8;
 
-  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', Ubuntu, sans-serif;
-  --font: ui-monospace, 'JetBrains Mono', 'Cascadia Mono', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-  --fs: 14px;
-  --fs-s: 12px;
-  --row: 30px;
+  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --r: 8px;
+  --r-chip: 6px;
 
-  color-scheme: dark;
+  /* Переходы только для цвета, фона и прозрачности, и короткие. */
+  --t: 130ms ease;
+
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f7f9;
-    --panel: #ffffff;
-    --raise: #f0f2f5;
-    --line: #dde1e7;
-    --line-strong: #c4cad3;
-    --text: #1d232b;
-    --muted: #5d6673;
-    --faint: #8b94a1;
-    --accent: #0a69da;
-    --ok: #1a7f37;
-    --warn: #9a6700;
-    --bad: #cf222e;
-    --sel: rgba(10, 105, 218, 0.09);
-    --g-app: #8250df;
-    --g-set: #b35900;
-    --g-name: #0a69da;
-    --g-addr: #0f7b6c;
-    color-scheme: light;
-  }
+:root[data-theme='dark'] {
+  --bg: #09090b;
+  --surface: #18181b;
+  --surface-hover: #27272a;
+  --field-focus: #232326;
+  --line: #27272a;
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --faint: #71717a;
+  --error: #f87171;
+  --backdrop: rgba(0, 0, 0, 0.6);
+  --dot-off: #71717a;
+  --switch-off: #3f3f46;
+  color-scheme: dark;
 }
 
 *,
@@ -66,15 +63,13 @@
 
 html,
 body {
-  height: 100%;
+  min-height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: var(--fs)/1.5 var(--font-ui);
+  font: 400 14px/1.5 var(--font);
+  font-feature-settings: 'cv11', 'ss01';
   -webkit-font-smoothing: antialiased;
-}
-
-#app {
-  min-height: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
 button,
@@ -92,141 +87,230 @@ button {
 
 button:disabled {
   cursor: default;
-  opacity: 0.45;
 }
 
 ul {
   list-style: none;
 }
 
+/* Значки Lucide: тонкая линия, серые, 16 px — если не сказано иное. */
+svg[stroke='currentColor'] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+
 :focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
+  outline: 2px solid color-mix(in srgb, var(--text) 22%, transparent);
+  outline-offset: 2px;
+}
+
+/* У полей своя отметка фокуса — фоном. */
+.input:focus-visible,
+.field-box :focus-visible {
+  outline: none;
 }
 
 ::selection {
-  background: var(--sel);
+  background: var(--surface-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation: none !important;
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
 }
 
 /* ── Общие элементы ─────────────────────────────────────────────────── */
 
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
-.ok { color: var(--ok); }
-.warn { color: var(--warn); }
-.bad { color: var(--bad); }
+.error { color: var(--error); }
 
-.mono {
-  font-family: var(--font);
-  font-size: 13px;
+.num {
+  font-variant-numeric: tabular-nums;
 }
 
-/* Подпись над значением: «ПИНГ», «ПРИНЯТО». Мелко и приглушённо, чтобы
-   значение читалось первым. */
-.caption {
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
+/* Всплывающее окошко: подсказки, выбор программы, выбор подключения.
+   Без тени — отделяется от страницы одной тонкой линией. */
+.pop {
+  position: absolute;
+  z-index: 20;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Кнопки. Основная — цвет текста на фоне страницы (чёрная в светлой теме,
+   белая в тёмной), вторичная — приподнятая поверхность, призрачная — без
+   фона до наведения. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--raise);
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r);
+  background: var(--surface);
+  font-weight: 500;
   white-space: nowrap;
-  transition: border-color 60ms, background-color 60ms, color 60ms;
+  user-select: none;
+  transition: background-color var(--t), color var(--t), opacity var(--t);
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--muted);
+  background: var(--surface-hover);
+}
+
+.btn:active:not(:disabled) {
+  opacity: 0.8;
+}
+
+.btn:disabled {
+  opacity: 0.4;
 }
 
 .btn--primary {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: transparent;
+  background: var(--text);
+  color: var(--bg);
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: var(--sel);
-  border-color: var(--accent);
-}
-
-.btn--danger {
-  border-color: var(--bad);
-  color: var(--bad);
-  background: transparent;
+  background: var(--text);
+  opacity: 0.88;
 }
 
 .btn--ghost {
-  border-color: transparent;
   background: transparent;
   color: var(--muted);
 }
 
 .btn--ghost:hover:not(:disabled) {
+  background: var(--surface);
   color: var(--text);
-  border-color: var(--line);
+}
+
+.btn--ghost svg {
+  color: inherit;
+}
+
+.btn--on {
+  background: var(--surface);
+  color: var(--text);
 }
 
 .btn--sm {
-  height: 24px;
-  padding: 0 8px;
-  font-size: 12px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+/* Квадратная кнопка со значком; подпись — в aria-label и title. */
+.btn--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.btn--sm.btn--icon {
+  width: 28px;
+  height: 28px;
 }
 
 .btn--busy {
   cursor: progress;
 }
 
-.btn--busy::after {
-  content: '…';
-}
-
 .input {
   width: 100%;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--bg);
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r);
+  background: var(--surface);
   outline: none;
+  transition: background-color var(--t);
 }
 
-.input:focus {
-  border-color: var(--accent);
+/* Фокус — сменой фона, без рамки и кольца: тонкая линия на скруглённых
+   углах при дробном масштабе экрана рисуется ступеньками. */
+.input:focus,
+.field-box:focus-within {
+  background: var(--field-focus);
 }
 
 textarea.input {
-  font-family: var(--font);
-  font-size: 13px;
   height: auto;
-  min-height: 160px;
-  padding: 6px 8px;
+  min-height: 180px;
+  padding: 10px 12px;
   resize: vertical;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .input::placeholder {
   color: var(--faint);
 }
 
-.field {
-  display: grid;
-  gap: 4px;
+/* Поле со значком и кнопками внутри. */
+.field-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--r);
+  background: var(--surface);
+  transition: background-color var(--t);
 }
 
-.field > span {
+.field-box > svg {
   color: var(--muted);
-  font-size: var(--fs-s);
+}
+
+.field-box > input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  outline: none;
+}
+
+.field-box > input::placeholder {
+  color: var(--faint);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field > span,
+.field > label {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .row {
@@ -247,43 +331,71 @@ textarea.input {
 }
 
 .empty {
-  color: var(--faint);
+  color: var(--muted);
+  font-size: 13px;
   padding: 8px 0;
 }
 
-.dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  flex: none;
-  background: var(--faint);
-}
-
-.dot--on { background: var(--ok); }
-.dot--busy { background: var(--warn); }
-.dot--error,
-.dot--offline { background: var(--bad); }
-
 kbd {
   display: inline-block;
-  min-width: 18px;
-  padding: 0 4px;
-  border: 1px solid var(--line-strong);
-  color: var(--faint);
-  font: inherit;
-  font-size: 11px;
-  line-height: 16px;
+  min-width: 20px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 500 12px/20px var(--font);
   text-align: center;
 }
 
-.check {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+/* Переключатель вкл/выкл поверх настоящего чекбокса: доступность и
+   клавиатура — от браузера, вид — свой. */
+.switch {
+  appearance: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--switch-off);
   cursor: pointer;
+  transition: background-color var(--t);
 }
 
-.check input {
-  margin-top: 3px;
-  accent-color: var(--accent);
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fafafa;
+}
+
+.switch:checked::after {
+  background: var(--bg);
+}
+
+.switch:checked {
+  background: var(--text);
+}
+
+.switch:checked::after {
+  left: 18px;
+}
+
+.switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Появление всплывающих окошек — только прозрачностью. */
+.pop-enter-active,
+.pop-leave-active {
+  transition: opacity var(--t);
+}
+
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
 }

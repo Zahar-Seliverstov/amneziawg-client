@@ -28,6 +28,7 @@ import (
 	"github.com/user/amnezia-web-client/internal/dnsproxy"
 	"github.com/user/amnezia-web-client/internal/iproute"
 	"github.com/user/amnezia-web-client/internal/routing"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // sweepInterval — как часто снимаем маршруты с истёкшим сроком.
@@ -50,7 +51,7 @@ const minNameRouteLifetime = 6 * time.Hour
 // Любая неудача здесь не фатальна: возвращаем false, и вызывающий настраивает
 // DNS напрямую, как раньше. Остаться без разрешения имён из-за необязательной
 // функции нельзя — это оставило бы пользователя без интернета.
-func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.RoutingConfig) (netip.Addr, bool) {
+func (m *Manager) startNameRouting(spec *tunnel.Spec, rc *config.RoutingConfig) (netip.Addr, bool) {
 	if rc == nil {
 		return netip.Addr{}, false
 	}
@@ -60,13 +61,13 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 		return netip.Addr{}, false
 	}
 
-	upstream := parseDNSServers(cfg.Interface.DNS)
+	upstream := parseDNSServers(spec.DNS)
 	if len(upstream) == 0 {
 		log.Printf("Маршрутизация по именам не включена: в конфиге не задан DNS")
 		return netip.Addr{}, false
 	}
 
-	listen, ok := tunnelAddr(cfg.Interface.Address)
+	listen, ok := tunnelAddr(spec.Addresses)
 	if !ok {
 		log.Printf("Маршрутизация по именам не включена: у интерфейса нет адреса IPv4")
 		return netip.Addr{}, false
@@ -99,6 +100,12 @@ func (m *Manager) startNameRouting(cfg *config.AmneziaWGConfig, rc *config.Routi
 			log.Printf("Правило по имени %s: адресов взято под учёт %d", answer.Name, n)
 		}
 	})
+
+	// Имя из списка «только через VPN» при туннеле без IPv6: адрес IPv6
+	// увёл бы программу к сайту напрямую, мимо туннеля, — его не отдаём.
+	if rc.Mode == config.RoutingModeVPNList && !hasIPv6Address(spec.Addresses) {
+		proxy.DropAAAA(func(name string) bool { return m.nameMatcher.Load().Match(name) })
+	}
 
 	if err := proxy.Start(netip.AddrPortFrom(listen, 53), upstream); err != nil {
 		log.Printf("Маршрутизация по именам не включена: %v", err)
@@ -351,5 +358,12 @@ func resolverFor(addrs []netip.AddrPort) *net.Resolver {
 			}
 			return nil, lastErr
 		},
+	}
+}
+
+// flushDNSCache сбрасывает кэш системного резолвера, если это умеет система.
+func (m *Manager) flushDNSCache() {
+	if m.flushDNS != nil {
+		m.flushDNS()
 	}
 }

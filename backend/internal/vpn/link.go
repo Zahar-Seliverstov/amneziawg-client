@@ -9,15 +9,15 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // configureLink поднимает интерфейс и вешает на него адреса. Маршрутов здесь
 // нет намеренно — см. configureTraffic.
-func (m *Manager) configureLink(cfg *config.AmneziaWGConfig) error {
+func (m *Manager) configureLink(spec *tunnel.Spec) error {
 	ifname := m.ifname()
 
-	for _, addr := range cfg.Interface.Address {
+	for _, addr := range spec.Addresses {
 		if err := m.ip.AddAddress(addr, ifname); err != nil {
 			// Отдельный адрес мог не лечь по безобидной причине — например,
 			// он уже назначен. Итог проверяем по состоянию интерфейса ниже.

@@ -20,6 +20,8 @@ import (
 	"net"
 	"net/netip"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 const (
@@ -71,10 +73,10 @@ func (p *Proxy) handleTCP(conn net.Conn) {
 			return
 		}
 
-		response, err := exchangeTCP(p.servers(), query)
+		response, err := p.answer(query, exchangeTCP)
 		if err != nil {
 			log.Printf("dnsproxy: запрос по TCP не обслужен: %v", err)
-			if refusal, ok := servfail(query); ok {
+			if refusal, ok := reply(query, dnsmessage.RCodeServerFailure); ok {
 				writeMessage(conn, refusal)
 			}
 			return
@@ -84,8 +86,6 @@ func (p *Proxy) handleTCP(conn net.Conn) {
 			log.Printf("dnsproxy: не удалось ответить клиенту по TCP: %v", err)
 			return
 		}
-
-		p.observeAnswer(response)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
@@ -37,13 +37,13 @@ type pingResponse struct {
 // bypass-маршрутом, который ставит vpn.Manager, — так что это чистая
 // сетевая задержка до сервера, без шифрования и обработки на нём.
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
-	cfg := s.pingConfig(s.vpnManager.GetStatus())
-	if cfg == nil {
+	spec, ok := s.pingTarget(s.vpnManager.GetStatus())
+	if !ok {
 		jsonResponse(w, pingResponse{Error: "Нет конфигурации"})
 		return
 	}
 
-	host, port := endpointHostPort(cfg)
+	host, port := endpointHostPort(spec.Endpoints)
 	if host == "" {
 		jsonResponse(w, pingResponse{Error: "В конфигурации нет адреса сервера"})
 		return
@@ -125,33 +125,30 @@ func pingPorts(endpointPort string) []string {
 	return append(ports, "443", "80")
 }
 
-// pingConfig выбирает конфиг, до сервера которого мерить: активный, а если
-// подключения нет — выбранный на главном экране.
-func (s *Server) pingConfig(status vpn.ConnectionStatus) *config.AmneziaWGConfig {
-	if status.ConfigID != "" {
-		if cfg := s.config.GetConfig(status.ConfigID); cfg != nil {
-			return cfg
-		}
-	}
-	if id := s.config.GetSelectedConfigID(); id != "" {
-		return s.config.GetConfig(id)
-	}
-	return nil
-}
-
-// endpointHostPort разбирает Endpoint первого пира на хост и порт.
-func endpointHostPort(cfg *config.AmneziaWGConfig) (string, string) {
-	for _, peer := range cfg.Peers {
-		if peer.Endpoint == "" {
+// pingTarget выбирает конфигурацию, до сервера которой мерить: активную, а
+// если подключения нет — выбранную на главном экране.
+func (s *Server) pingTarget(status vpn.ConnectionStatus) (tunnel.Spec, bool) {
+	for _, id := range []string{status.ConfigID, s.config.GetSelectedConfigID()} {
+		if id == "" {
 			continue
 		}
-		host, port, err := net.SplitHostPort(peer.Endpoint)
-		if err != nil {
-			return peer.Endpoint, "" // Порта нет — берём как есть.
+		if target, err := s.profiles.Target(id); err == nil {
+			return target.Config.Spec(), true
 		}
-		return host, port
 	}
-	return "", ""
+	return tunnel.Spec{}, false
+}
+
+// endpointHostPort разбирает первый адрес сервера на хост и порт.
+func endpointHostPort(endpoints []string) (string, string) {
+	if len(endpoints) == 0 {
+		return "", ""
+	}
+	host, port, err := net.SplitHostPort(endpoints[0])
+	if err != nil {
+		return endpoints[0], "" // Порта нет — берём как есть.
+	}
+	return host, port
 }
 
 // resolveEndpoint предпочитает IPv4: в обход туннеля выведен только он —

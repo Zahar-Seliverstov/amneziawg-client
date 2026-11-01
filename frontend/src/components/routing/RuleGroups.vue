@@ -1,44 +1,60 @@
 <template>
-  <div>
-    <section v-for="group in groups" :key="group.key" class="group" :class="`group--${group.key}`">
-      <h3 class="group__head">
-        <span class="group__mark" aria-hidden="true"></span>
-        <span class="group__title">{{ group.title }}</span>
-        <span class="group__count mono">{{ group.rules.length }}</span>
-        <span class="group__note">{{ group.note }}</span>
+  <div class="groups">
+    <section v-for="group in groups" :key="group.key" class="group">
+      <h3>
+        <button
+          type="button"
+          class="group__head"
+          :aria-expanded="isOpen(group.key)"
+          :aria-controls="`rules-${group.key}`"
+          :disabled="Boolean(filter)"
+          :title="group.note"
+          @click="toggle(group.key)"
+        >
+          <ChevronRight class="group__chev" aria-hidden="true" />
+          <span>{{ group.title }}</span>
+          <span class="group__count num">{{ group.rules.length }}</span>
+        </button>
       </h3>
-      <ul class="rules">
+      <TransitionGroup v-show="isOpen(group.key)" :id="`rules-${group.key}`" tag="ul" name="chip" class="chips">
         <li
           v-for="rule in group.rules"
           :key="rule.id"
-          class="rule"
-          :class="{ 'rule--dead': isDead(rule) }"
+          class="chip"
+          :class="{ 'chip--dead': isDead(rule) }"
           :title="titleOf(rule)"
         >
-          <span class="rule__text mono">{{ ruleText(rule) }}</span>
-          <span v-if="countOf(rule)" class="rule__count mono">{{ countOf(rule) }}</span>
-          <button class="rule__drop" :aria-label="`Убрать ${ruleText(rule)}`" title="Убрать" @click="remove(rule)">×</button>
+          <span class="chip__text">{{ ruleText(rule) }}</span>
+          <span v-if="countOf(rule)" class="chip__count num">{{ countOf(rule) }}</span>
+          <button type="button" class="chip__drop" :aria-label="`Убрать ${ruleText(rule)}`" title="Убрать" @click="remove(rule)">
+            <X aria-hidden="true" />
+          </button>
         </li>
-      </ul>
+      </TransitionGroup>
     </section>
 
     <p v-if="routing && !rules.length" class="empty">
       Список пуст — {{ mode === 'vpn_list' ? 'через VPN сейчас не идёт ничего' : 'через VPN сейчас идёт всё' }}.
-      Начните, например, с <span class="mono">geosite:youtube</span> или <span class="mono">geoip:ru</span>.
+      Начните, например, с geosite:youtube или geoip:ru.
     </p>
     <p v-else-if="filter && !groups.length" class="empty">Нет совпадений — Enter добавит набранное.</p>
   </div>
 </template>
 
 <script setup lang="ts">
-// Список правил по группам. Убрать правило — ×.
-import { computed } from 'vue'
+// Список правил по группам. Группу можно свернуть — при полусотне правил
+// сплошная стена плашек не читается; что свёрнуто, помнит браузер.
+// Пока в поле набран фильтр, раскрыто всё: искомое не должно прятаться.
+import { ChevronRight, X } from '@lucide/vue'
+import { computed, ref, watch } from 'vue'
 import type { RoutingRule } from '../../api/types'
-import { RULE_GROUPS, describeRule, isGeo, ruleText, sortKey } from '../../lib/rules'
+import { RULE_GROUPS, describeRule, isGeo, ruleText, sortKey, type RuleGroupKey } from '../../lib/rules'
 import { useGeo } from '../../stores/geo'
 import { useRouting } from '../../stores/routing'
 
 const props = defineProps<{ filter: string }>()
+
+const COLLAPSED_KEY = 'awg-collapsed-groups'
 
 const { routing, mode, rules, remove } = useRouting()
 const { geo, counts } = useGeo()
@@ -53,6 +69,33 @@ const groups = computed(() =>
   })).filter(group => group.rules.length)
 )
 
+// ── Свёрнутые группы ────────────────────────────────────────────────
+function readCollapsed(): RuleGroupKey[] {
+  try {
+    return JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+
+const collapsed = ref(new Set<RuleGroupKey>(readCollapsed()))
+
+watch(collapsed, set => {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]))
+  } catch {}
+}, { deep: true })
+
+function isOpen(key: RuleGroupKey) {
+  return Boolean(props.filter) || !collapsed.value.has(key)
+}
+
+function toggle(key: RuleGroupKey) {
+  if (collapsed.value.has(key)) collapsed.value.delete(key)
+  else collapsed.value.add(key)
+}
+
+// ── Плашки ──────────────────────────────────────────────────────────
 function countOf(rule: RoutingRule) {
   if (!isGeo(rule.type) || rule.value.includes('@')) return ''
   const n = counts.value[`${rule.type}:${rule.value}`]
@@ -71,94 +114,156 @@ function titleOf(rule: RoutingRule) {
 </script>
 
 <style scoped>
-.group {
-  margin-bottom: 18px;
-  --g: var(--g-name);
+.groups {
+  display: grid;
+  gap: 12px;
 }
 
-.group--app { --g: var(--g-app); }
-.group--set { --g: var(--g-set); }
-.group--addr { --g: var(--g-addr); }
+h3 {
+  font: inherit;
+}
 
+/* Заголовок группы тихий — вторичным цветом, счётчик ещё тише: читаются
+   сами правила, а не рамки вокруг них. */
 .group__head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin-left: -6px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  color: var(--muted);
   font-size: 13px;
-  font-weight: normal;
+  font-weight: 500;
+  transition: color var(--t), background-color var(--t);
 }
 
-.group__mark {
-  width: 8px;
-  height: 8px;
-  align-self: center;
-  border-radius: 2px;
-  background: var(--g);
+.group__head:hover:not(:disabled) {
+  color: var(--text);
 }
 
-.group__title {
-  font-weight: 600;
+.group__head:disabled {
+  cursor: default;
+}
+
+.group__chev {
+  width: 14px;
+  height: 14px;
+  color: var(--faint);
+}
+
+.group__head[aria-expanded='true'] .group__chev {
+  transform: rotate(90deg);
 }
 
 .group__count {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.group__note {
   color: var(--faint);
-  font-size: 12px;
+  font-weight: 400;
 }
 
-.rules {
+.chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
+  padding-top: 6px;
 }
 
-.rule {
+/* Плашка — только фон, без рамки и цветных меток. Крестик лежит поверх
+   конца плашки и виден при наведении и фокусе: пятьдесят крестиков сразу —
+   это шум, а не информация. */
+.chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  height: 26px;
-  padding-left: 8px;
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--g);
-  border-radius: 3px;
-  background: var(--raise);
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-chip);
+  background: var(--surface);
+  font-size: 13px;
+  transition: background-color var(--t);
 }
 
-.rule:hover {
-  border-color: var(--line-strong);
-  border-left-color: var(--g);
+.chip:hover,
+.chip:focus-within {
+  background: var(--surface-hover);
 }
 
-.rule__text {
+.chip__text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rule__count {
+.chip__count {
   color: var(--faint);
-  font-size: 11px;
+  font-size: 12px;
 }
 
-.rule--dead .rule__text {
+.chip--dead .chip__text {
   color: var(--faint);
   text-decoration: line-through;
 }
 
-.rule__drop {
-  width: 24px;
-  height: 24px;
-  color: var(--faint);
-  font-size: 15px;
+.chip__drop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  border-radius: 0 var(--r-chip) var(--r-chip) 0;
+  background: var(--surface-hover);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--t), color var(--t);
 }
 
-.rule__drop:hover {
-  color: var(--bad);
+.chip__drop svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chip:hover .chip__drop,
+.chip__drop:focus-visible {
+  opacity: 1;
+}
+
+.chip__drop:hover {
+  color: var(--text);
+}
+
+.chip__drop:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Без мыши наводить нечем — крестик виден всегда, но тихим цветом и
+   своим местом, не поверх текста. */
+@media (hover: none) {
+  .chip {
+    padding-right: 0;
+  }
+
+  .chip__drop {
+    position: static;
+    height: 28px;
+    background: transparent;
+    color: var(--faint);
+    opacity: 1;
+  }
+}
+
+/* Плашка исчезает коротким угасанием. */
+.chip-enter-active,
+.chip-leave-active {
+  transition: opacity var(--t);
+}
+
+.chip-enter-from,
+.chip-leave-to {
+  opacity: 0;
 }
 </style>

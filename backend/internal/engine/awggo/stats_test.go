@@ -1,10 +1,8 @@
-package vpn
+package awggo
 
 import (
 	"testing"
 	"time"
-
-	"github.com/user/amnezia-web-client/internal/config"
 )
 
 // Ответ IpcGet с двумя пирами: счётчики должны сложиться, а время
@@ -28,7 +26,7 @@ rx_bytes=66
 errno=0
 `
 
-	got := parseDeviceStats(state)
+	got := parseStats(state)
 
 	if got.TxBytes != 1255 {
 		t.Errorf("tx: ожидалось 1255, получено %d", got.TxBytes)
@@ -54,7 +52,7 @@ rx_bytes=0
 errno=0
 `
 
-	got := parseDeviceStats(state)
+	got := parseStats(state)
 
 	if !got.LastHandshake.IsZero() {
 		t.Errorf("рукопожатия не было, а время не нулевое: %v", got.LastHandshake)
@@ -69,7 +67,7 @@ errno=0
 func TestParseDeviceStatsNanoseconds(t *testing.T) {
 	state := "public_key=b1cd\nlast_handshake_time_sec=1700000000\nlast_handshake_time_nsec=250000000\n"
 
-	got := parseDeviceStats(state)
+	got := parseStats(state)
 
 	if want := time.Unix(1700000000, 250000000); !got.LastHandshake.Equal(want) {
 		t.Errorf("ожидалось %v, получено %v", want, got.LastHandshake)
@@ -78,36 +76,9 @@ func TestParseDeviceStatsNanoseconds(t *testing.T) {
 
 func TestParseDeviceStatsGarbage(t *testing.T) {
 	for _, state := range []string{"", "errno=0\n", "мусор без знака равенства\n", "tx_bytes=не число\n"} {
-		got := parseDeviceStats(state)
+		got := parseStats(state)
 		if got.TxBytes != 0 || got.RxBytes != 0 || !got.LastHandshake.IsZero() {
 			t.Errorf("на входе %q ожидался пустой результат, получено %+v", state, got)
 		}
-	}
-}
-
-// Пир с keepalive рукопожимается сам — маршруты до рукопожатия ему не нужны.
-// Ошибка здесь означает, что трафик снова уйдёт в неподнятый туннель.
-func TestHasKeepalive(t *testing.T) {
-	cases := []struct {
-		name string
-		peer config.PeerConfig
-		want bool
-	}{
-		{"число", config.PeerConfig{PersistentKeepalive: 25}, true},
-		{"диапазон", config.PeerConfig{PersistentKeepaliveRaw: "25-35"}, true},
-		{"диапазон и ноль", config.PeerConfig{PersistentKeepalive: 0, PersistentKeepaliveRaw: "25-35"}, true},
-		{"не задан", config.PeerConfig{}, false},
-		{"пробелы", config.PeerConfig{PersistentKeepaliveRaw: "   "}, false},
-	}
-
-	for _, c := range cases {
-		cfg := &config.AmneziaWGConfig{Peers: []config.PeerConfig{c.peer}}
-		if got := hasKeepalive(cfg); got != c.want {
-			t.Errorf("%s: ожидалось %v, получено %v", c.name, c.want, got)
-		}
-	}
-
-	if hasKeepalive(&config.AmneziaWGConfig{}) {
-		t.Error("без пиров keepalive быть не может")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/user/amnezia-web-client/internal/config"
 	"github.com/user/amnezia-web-client/internal/geodata"
 	"github.com/user/amnezia-web-client/internal/localguard"
+	"github.com/user/amnezia-web-client/internal/profiles"
 	"github.com/user/amnezia-web-client/internal/vpn"
 )
 
@@ -20,6 +21,7 @@ type Server struct {
 	router     *mux.Router
 	handler    http.Handler
 	config     *config.AppConfig
+	profiles   *profiles.Catalog
 	vpnManager *vpn.Manager
 
 	// Подписчики на поток изменений статуса — см. events.go.
@@ -43,10 +45,11 @@ type Server struct {
 }
 
 // NewServer creates a new API server
-func NewServer(cfg *config.AppConfig, vpnMgr *vpn.Manager, geo *geodata.Store) *Server {
+func NewServer(cfg *config.AppConfig, catalog *profiles.Catalog, vpnMgr *vpn.Manager, geo *geodata.Store) *Server {
 	s := &Server{
 		router:       mux.NewRouter(),
 		config:       cfg,
+		profiles:     catalog,
 		vpnManager:   vpnMgr,
 		eventClients: make(map[*eventClient]bool),
 		geo:          geo,
@@ -76,6 +79,10 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/configs/{id}", s.handleGetConfig).Methods("GET")
 	api.HandleFunc("/configs/{id}", s.handleUpdateConfig).Methods("PUT")
 	api.HandleFunc("/configs/{id}", s.handleDeleteConfig).Methods("DELETE")
+
+	// Протоколы, которые служба умеет разбирать: интерфейс не зашивает их у
+	// себя и подписывает конфигурации по этому списку.
+	api.HandleFunc("/protocols", s.handleGetProtocols).Methods("GET")
 
 	// VPN Control
 	api.HandleFunc("/vpn/status", s.handleGetStatus).Methods("GET")

@@ -18,13 +18,12 @@ package vpn
 // менеджер работает по-прежнему, маршрутами в общей таблице.
 
 import (
-	"log"
-	"strings"
-
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
-// policyRouter — маршрутизация по политикам и правила для программ.
+// policyRouter — маршрутизация по политикам. Правила для программ — отдельно,
+// см. approuter.go: на Windows они есть, а политик нет.
 type policyRouter interface {
 	// Table — хвост команды "ip route add", кладущий маршрут в нашу таблицу.
 	Table() []string
@@ -42,12 +41,6 @@ type policyRouter interface {
 	// Down снимает правила и опустошает наши таблицы. Безопасна, если ничего
 	// не ставилось: ею же убирается оставшееся после аварийного выхода.
 	Down()
-
-	// SetApps задаёт программы, чьи соединения идут не так, как остальное:
-	// в режиме «всё, кроме списка» — мимо туннеля, в режиме «только список» —
-	// в туннель. У программ из udp так идёт только UDP, остальное — общим
-	// путём. Пустые списки возвращают все взятые программы на место.
-	SetApps(apps appSet, viaTunnel bool, ifname string, v6 bool) error
 }
 
 // tableArgs — хвост маршрута, кладущий его в нашу таблицу. Пусто без
@@ -71,76 +64,9 @@ func (m *Manager) throwRoute(prefix string) []string {
 }
 
 // fullTunnel сообщает, ляжет ли в нашу таблицу маршрут по умолчанию.
-func fullTunnel(cfg *config.AmneziaWGConfig, rc *config.RoutingConfig) bool {
+func fullTunnel(spec *tunnel.Spec, rc *config.RoutingConfig) bool {
 	if rc == nil || len(rc.Rules) == 0 {
-		var allowed []string
-		for _, peer := range cfg.Peers {
-			allowed = append(allowed, peer.AllowedIPs...)
-		}
-		return hasDefaultRoute(allowed)
+		return hasDefaultRoute(spec.AllowedIPs)
 	}
 	return rc.Mode == config.RoutingModeDirectList
-}
-
-// appSet — имена программ из правил app:: all — все соединения программы,
-// udp — только UDP (app:vesktop/udp).
-type appSet struct {
-	all, udp []string
-}
-
-func (s appSet) empty() bool { return len(s.all) == 0 && len(s.udp) == 0 }
-
-func (s appSet) String() string {
-	names := append([]string(nil), s.all...)
-	for _, name := range s.udp {
-		names = append(names, name+config.AppUDPSuffix)
-	}
-	return strings.Join(names, ", ")
-}
-
-// appNames — имена программ из включённых правил app:.
-func appNames(rc *config.RoutingConfig) appSet {
-	var set appSet
-	if rc == nil {
-		return set
-	}
-	for _, rule := range rc.Rules {
-		if !rule.Enabled || rule.Type != config.RuleTypeApp {
-			continue
-		}
-		if name, udp := config.SplitApp(strings.ToLower(rule.Value)); udp {
-			set.udp = append(set.udp, name)
-		} else {
-			set.all = append(set.all, name)
-		}
-	}
-	return set
-}
-
-// syncApps приводит набор взятых программ в соответствие с правилами.
-// Вызывать под routeMu.
-func (m *Manager) syncApps(cfg *config.AmneziaWGConfig, rc *config.RoutingConfig) {
-	names := appNames(rc)
-
-	if m.policy == nil {
-		if !names.empty() {
-			log.Printf("Правила для программ (%s) на этой системе не поддерживаются и не действуют", names)
-		}
-		return
-	}
-
-	viaTunnel := rc != nil && rc.Mode == config.RoutingModeVPNList
-	if err := m.policy.SetApps(names, viaTunnel, m.ifname(), hasIPv6Address(cfg.Interface.Address)); err != nil {
-		log.Printf("Правила для программ не применены: %v", err)
-	}
-}
-
-// releaseApps возвращает все взятые программы на место. Вызывать под routeMu.
-func (m *Manager) releaseApps() {
-	if m.policy == nil {
-		return
-	}
-	if err := m.policy.SetApps(appSet{}, false, "", false); err != nil {
-		log.Printf("Программы не возвращены на место: %v", err)
-	}
 }

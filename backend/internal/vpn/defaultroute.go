@@ -6,11 +6,11 @@ import (
 	"net"
 	"strings"
 
-	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // setupDefaultVPNRoute sets up routing all traffic through VPN
-func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
+func (m *Manager) setupDefaultVPNRoute(spec *tunnel.Spec) error {
 	ifname := m.ifname()
 
 	// С маршрутизацией по политикам сервер ниоткуда выводить не надо: пакеты
@@ -21,7 +21,7 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 		if err := m.addRoute(m.tunnelRoute("0.0.0.0/0")...); err != nil {
 			return fmt.Errorf("не удалось направить трафик в туннель: %w", err)
 		}
-		if hasIPv6Address(cfg.Interface.Address) {
+		if hasIPv6Address(spec.Addresses) {
 			if err := m.addRoute(m.tunnelRoute("::/0")...); err != nil {
 				log.Printf("Warning: failed to add IPv6 route ::/0: %v", err)
 			}
@@ -31,14 +31,10 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 
 	// Адрес сервера VPN должен идти В ОБХОД туннеля, иначе получится петля.
 	// Endpoint может быть именем хоста — резолвим его, пока DNS ещё исправен.
-	for _, peer := range cfg.Peers {
-		if peer.Endpoint == "" {
-			continue
-		}
-
-		host, _, err := net.SplitHostPort(peer.Endpoint)
+	for _, endpoint := range spec.Endpoints {
+		host, _, err := net.SplitHostPort(endpoint)
 		if err != nil || host == "" {
-			return fmt.Errorf("не разобрать адрес сервера %q: %w", peer.Endpoint, err)
+			return fmt.Errorf("не разобрать адрес сервера %q: %w", endpoint, err)
 		}
 
 		addrs, err := m.endpointAddresses(host)
@@ -119,7 +115,7 @@ func (m *Manager) setupDefaultVPNRoute(cfg *config.AmneziaWGConfig) error {
 	// IPv6 заворачиваем в туннель ТОЛЬКО если у интерфейса есть IPv6-адрес.
 	// Иначе маршрут ведёт в никуда: браузер по AAAA-записи уходит в IPv6,
 	// упирается в чёрную дыру и сайт не открывается, хотя IPv4 живой.
-	if hasIPv6Address(cfg.Interface.Address) {
+	if hasIPv6Address(spec.Addresses) {
 		for _, prefix := range []string{"::/1", "8000::/1"} {
 			if err := m.addRoute(prefix, "dev", ifname); err != nil {
 				log.Printf("Warning: failed to add IPv6 route %s: %v", prefix, err)

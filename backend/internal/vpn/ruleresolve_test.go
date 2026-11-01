@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/user/amnezia-web-client/internal/config"
+	"github.com/user/amnezia-web-client/internal/tunnel"
 )
 
 // Два имени вполне могут жить на одном адресе. Повторный "ip route add" на
@@ -22,7 +23,7 @@ func TestRepeatedAddressesGoOutOnce(t *testing.T) {
 		},
 	}
 
-	if err := m.configureRouting(&config.AmneziaWGConfig{}, routing); err != nil {
+	if err := m.configureRouting(&tunnel.Spec{}, routing); err != nil {
 		t.Fatalf("настройка не удалась: %v", err)
 	}
 
@@ -44,7 +45,7 @@ func TestDisabledRulesAreSkipped(t *testing.T) {
 		},
 	}
 
-	if err := m.configureRouting(&config.AmneziaWGConfig{}, routing); err != nil {
+	if err := m.configureRouting(&tunnel.Spec{}, routing); err != nil {
 		t.Fatalf("настройка не удалась: %v", err)
 	}
 
